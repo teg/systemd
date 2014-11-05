@@ -19,8 +19,10 @@
 ***/
 
 #include <ctype.h>
+#include <sys/types.h>
 
 #include "util.h"
+#include "macro.h"
 #include "refcnt.h"
 #include "path-util.h"
 #include "strxcpyx.h"
@@ -177,4 +179,19 @@ _public_ int sd_device_new_from_syspath(sd_device **ret, const char *syspath) {
         device = NULL;
 
         return 0;
+}
+
+_public_ int sd_device_new_from_devnum(sd_device **ret, char type, dev_t devnum) {
+        char *syspath;
+        char id[DECIMAL_STR_MAX(unsigned) * 2 + 1];
+
+        assert_return(ret, -EINVAL);
+        assert_return(type == 'b' || type == 'c', -EINVAL);
+
+        /* use /sys/dev/{block,char}/<maj>:<min> link */
+        snprintf(id, sizeof(id), "%u:%u", major(devnum), minor(devnum));
+
+        syspath = strappenda("/sys/dev/", (type == 'b' ? "block" : "char"), "/", id);
+
+        return sd_device_new_from_syspath(ret, syspath);
 }
