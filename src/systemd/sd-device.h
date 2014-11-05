@@ -37,6 +37,7 @@ sd_device *sd_device_unref(sd_device *device);
 
 int sd_device_new_from_syspath(sd_device **ret, const char *syspath);
 int sd_device_new_from_devnum(sd_device **ret, char type, dev_t devnum);
+int sd_device_new_from_subsystem_sysname(sd_device **ret, const char *subsystem, const char *sysname);
 
 int sd_device_get_syspath(sd_device *device, const char **ret);
 

@@ -195,3 +195,62 @@ _public_ int sd_device_new_from_devnum(sd_device **ret, char type, dev_t devnum)
 
         return sd_device_new_from_syspath(ret, syspath);
 }
+
+_public_ int sd_device_new_from_subsystem_sysname(sd_device **ret, const char *subsystem, const char *sysname) {
+        char *syspath;
+
+        assert_return(ret, -EINVAL);
+        assert_return(subsystem, -EINVAL);
+        assert_return(sysname, -EINVAL);
+
+        if (streq(subsystem, "subsystem")) {
+                syspath = strappenda("/sys/subsystem/", sysname);
+                if (access(syspath, F_OK) >= 0)
+                        return sd_device_new_from_syspath(ret, syspath);
+
+                syspath = strappenda("/sys/bus/", sysname);
+                if (access(syspath, F_OK) >= 0)
+                        return sd_device_new_from_syspath(ret, syspath);
+
+                syspath = strappenda("/sys/class/", sysname);
+                if (access(syspath, F_OK) >= 0)
+                        return sd_device_new_from_syspath(ret, syspath);
+        } else  if (streq(subsystem, "module")) {
+                syspath = strappenda("/sys/module/", sysname);
+                if (access(syspath, F_OK) >= 0)
+                        return sd_device_new_from_syspath(ret, syspath);
+        } else if (streq(subsystem, "drivers")) {
+                char subsys[PATH_MAX];
+                char *driver;
+
+                strscpy(subsys, sizeof(subsys), sysname);
+                driver = strchr(subsys, ':');
+                if (driver) {
+                        driver[0] = '\0';
+                        driver++;
+
+                        syspath = strappenda("/sys/subsystem/", subsys, "/drivers/", driver);
+                        if (access(syspath, F_OK) >= 0)
+                                return sd_device_new_from_syspath(ret, syspath);
+
+                        syspath = strappenda("/sys/bus/", subsys, "/drivers/", driver);
+                        if (access(syspath, F_OK) >= 0)
+                                return sd_device_new_from_syspath(ret, syspath);
+                } else
+                        return -EINVAL;
+        } else {
+                syspath = strappenda("/sys/subsystem/", subsystem, "/devices/", sysname);
+                if (access(syspath, F_OK) >= 0)
+                        return sd_device_new_from_syspath(ret, syspath);
+
+                syspath = strappenda("/sys/bus/", subsystem, "/devices/", sysname);
+                if (access(syspath, F_OK) >= 0)
+                        return sd_device_new_from_syspath(ret, syspath);
+
+                syspath = strappenda("/sys/class/", subsystem, "/", sysname);
+                if (access(syspath, F_OK) >= 0)
+                        return sd_device_new_from_syspath(ret, syspath);
+        }
+
+        return -ENOENT;
+}
