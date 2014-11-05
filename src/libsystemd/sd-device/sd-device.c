@@ -20,6 +20,7 @@
 
 #include <ctype.h>
 #include <sys/types.h>
+#include <net/if.h>
 
 #include "util.h"
 #include "macro.h"
@@ -470,4 +471,96 @@ _public_ int sd_device_new_from_subsystem_sysname(sd_device **ret, const char *s
         }
 
         return -ENOENT;
+}
+
+static int device_get_ifindex(sd_device *device, int *ifindex) {
+        int r;
+
+        assert(device);
+        assert(ifindex);
+
+        r = device_read_uevent_file(device);
+        if (r < 0)
+                return r;
+
+        *ifindex = device->ifindex;
+
+        return 0;
+}
+
+_public_ int sd_device_new_from_device_id(sd_device **ret, const char *id) {
+        int r;
+
+        assert_return(ret, -EINVAL);
+        assert_return(id, -EINVAL);
+
+        switch (id[0]) {
+        case 'b':
+        case 'c':
+        {
+                char type;
+                int maj, min;
+
+                r = sscanf(id, "%c%i:%i", &type, &maj, &min);
+                if (r != 3)
+                        return -EINVAL;
+
+                return sd_device_new_from_devnum(ret, type, makedev(maj, min));
+        }
+        case 'n':
+        {
+                _cleanup_device_unref_ sd_device *device = NULL;
+                _cleanup_close_ int sk = -1;
+                struct ifreq ifr = {};
+                int ifindex;
+
+                r = safe_atoi(&id[1], &ifr.ifr_ifindex);
+                if (r < 0)
+                        return r;
+                else if (ifr.ifr_ifindex <= 0)
+                        return -EINVAL;
+
+                sk = socket(PF_INET, SOCK_DGRAM, 0);
+                if (sk < 0)
+                        return -errno;
+
+                r = ioctl(sk, SIOCGIFNAME, &ifr);
+                if (r < 0)
+                        return -errno;
+
+                r = sd_device_new_from_subsystem_sysname(&device, "net", ifr.ifr_name);
+                if (r < 0)
+                        return r;
+
+                r = device_get_ifindex(device, &ifindex);
+                if (r < 0)
+                        return r;
+
+                /* this si racey, so we might end up with the wrong device */
+                if (ifr.ifr_ifindex != ifindex)
+                        return -ENODEV;
+
+                *ret = device;
+                device = NULL;
+
+                return 0;
+        }
+        case '+':
+        {
+                char subsys[PATH_MAX];
+                char *sysname;
+
+                (void)strscpy(subsys, sizeof(subsys), id + 1);
+                sysname = strchr(subsys, ':');
+                if (!sysname)
+                        return -EINVAL;
+
+                sysname[0] = '\0';
+                sysname ++;
+
+                return sd_device_new_from_subsystem_sysname(ret, subsys, sysname);
+        }
+        default:
+                return -EINVAL;
+        }
 }
