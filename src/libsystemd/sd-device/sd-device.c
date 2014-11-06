@@ -26,6 +26,7 @@
 #include "refcnt.h"
 #include "path-util.h"
 #include "strxcpyx.h"
+#include "fileio.h"
 
 #include "sd-device.h"
 
@@ -38,6 +39,13 @@ struct sd_device {
         const char *devpath;
         char *sysname;
         const char *sysnum;
+
+        char *devtype;
+        int ifindex;
+        char *devnode;
+        dev_t devnum;
+
+        bool uevent_loaded;
 };
 
 static int device_new(sd_device **ret) {
@@ -68,6 +76,9 @@ _public_ sd_device *sd_device_unref(sd_device *device) {
         if (device && REFCNT_DEC(device->n_ref) <= 0) {
                 free(device->syspath);
                 free(device->sysname);
+                free(device->devtype);
+                free(device->devnode);
+
                 free(device);
         }
 
@@ -156,6 +167,212 @@ _public_ int sd_device_get_syspath(sd_device *device, const char **ret) {
         assert(path_startswith(device->syspath, "/sys/"));
 
         *ret = device->syspath;
+
+        return 0;
+}
+
+static int device_set_ifindex(sd_device *device, const char *ifindex_str) {
+        int ifindex, r;
+
+        assert(device);
+        assert(ifindex_str);
+
+        r = safe_atoi(ifindex_str, &ifindex);
+        if (r < 0)
+                return r;
+
+        if (ifindex <= 0)
+                return -EINVAL;
+
+        device->ifindex = ifindex;
+
+        return 0;
+}
+
+static int device_set_devnode(sd_device *device, const char *_devnode) {
+        _cleanup_free_ char *devnode = NULL;
+        int r;
+
+        assert(device);
+        assert(_devnode);
+
+        if (_devnode[0] != '/') {
+                r = asprintf(&devnode, "/dev/%s", _devnode);
+                if (r < 0)
+                        return -ENOMEM;
+        } else {
+                devnode = strdup(_devnode);
+                if (!devnode)
+                        return -ENOMEM;
+        }
+
+        free(device->devnode);
+        device->devnode = devnode;
+        devnode = NULL;
+
+        return 0;
+}
+
+static int device_set_devtype(sd_device *device, const char *_devtype) {
+        _cleanup_free_ char *devtype = NULL;
+        int r;
+
+        assert(device);
+        assert(_devtype);
+
+        devtype = strdup(_devtype);
+        if (!devtype)
+                return -ENOMEM;
+
+        free(device->devtype);
+        device->devtype = devtype;
+        devtype = NULL;
+
+        return 0;
+}
+
+static int device_set_devnum(sd_device *device, const char *major, const char *minor) {
+        unsigned maj = 0, min = 0;
+        int r;
+
+        assert(device);
+        assert(major);
+
+        r = safe_atou(major, &maj);
+        if (r < 0)
+                return r;
+        if (!maj)
+                return 0;
+
+        if (minor) {
+                r = safe_atou(minor, &min);
+                if (r < 0)
+                        return r;
+        }
+
+        device->devnum = makedev(maj, min);
+
+        return 0;
+}
+
+static int handle_uevent_line(sd_device *device, const char *key, const char *value, const char **major, const char **minor) {
+        int r;
+
+        assert(device);
+        assert(key);
+        assert(value);
+
+        if (streq(key, "MAJOR"))
+                *major = value;
+        else if (streq(key, "MINOR"))
+                *minor = value;
+        else if (streq(key, "DEVTYPE")) {
+                r = device_set_devtype(device, value);
+                if (r < 0)
+                        return r;
+        } else if (streq(key, "IFINDEX")) {
+                r = device_set_ifindex(device, value);
+                if (r < 0)
+                        return r;
+        } else if (streq(key, "DEVNAME")) {
+                r = device_set_devnode(device, value);
+                if (r < 0)
+                        return r;
+        } else {
+                r = device_add_property(device, key, value);
+                if (r < 0)
+                        return r;
+        }
+
+        return 0;
+}
+
+static int device_read_uevent_file(sd_device *device) {
+        _cleanup_free_ char *uevent = NULL;
+        const char *syspath, *key, *value, *major = NULL, *minor = NULL;
+        char *path;
+        size_t uevent_len;
+        unsigned i;
+        int r;
+
+        enum {
+                PRE_KEY,
+                KEY,
+                PRE_VALUE,
+                VALUE,
+                INVALID_LINE,
+        } state = PRE_KEY;
+
+        assert(device);
+
+        if (device->uevent_loaded)
+                return 0;
+
+        r = sd_device_get_syspath(device, &syspath);
+        if (r < 0)
+                return r;
+
+        path = strappenda(syspath, "/uevent");
+
+        r = read_full_file(path, &uevent, &uevent_len);
+        if (r < 0) {
+                log_debug("sd-device: failed to read uevent file '%s': %s", path, strerror(-r));
+                return r;
+        }
+
+        for (i = 0; i < uevent_len; i++) {
+                switch (state) {
+                case PRE_KEY:
+                        if (!strchr(NEWLINE, uevent[i])) {
+                                key = &uevent[i];
+
+                                state = KEY;
+                        }
+
+                        break;
+                case KEY:
+                        if (uevent[i] == '=') {
+                                uevent[i] = '\0';
+
+                                state = PRE_VALUE;
+                        } else if (strchr(NEWLINE, uevent[i])) {
+                                uevent[i] = '\0';
+                                log_debug("sd-device: ignoring invalid uevent line '%s'", key);
+
+                                state = PRE_KEY;
+                        }
+
+                        break;
+                case PRE_VALUE:
+                        value = &uevent[i];
+
+                        state = VALUE;
+
+                        break;
+                case VALUE:
+                        if (strchr(NEWLINE, uevent[i])) {
+                                uevent[i] = '\0';
+
+                                r = handle_uevent_line(device, key, value, &major, &minor);
+                                if (r < 0)
+                                        log_debug("sd-device: failed to handle uevent entry '%s=%s': %s", key, value, strerror(-r));
+
+                                state = PRE_KEY;
+                        }
+
+                        break;
+                default:
+                        assert_not_reached("invalid state when parsing uevent file");
+                }
+        }
+
+        if (major) {
+                r = device_set_devnum(device, major, minor);
+                if (r < 0)
+                        log_debug("sd-device: could not set 'MAJOR=%s' or 'MINOR=%s' from '%s': %s", major, minor, path, strerror(-r));
+        }
+
+        device->uevent_loaded = true;
 
         return 0;
 }
