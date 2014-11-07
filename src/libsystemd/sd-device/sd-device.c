@@ -686,3 +686,18 @@ _public_ int sd_device_get_subsystem(sd_device *device, const char **ret) {
 
         return 0;
 }
+
+_public_ int sd_device_get_devtype(sd_device *device, const char **devtype) {
+        int r;
+
+        assert(devtype);
+        assert(device);
+
+        r = device_read_uevent_file(device);
+        if (r < 0)
+                return r;
+
+        *devtype = device->devtype;
+
+        return 0;
+}
