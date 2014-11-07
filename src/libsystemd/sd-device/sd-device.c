@@ -36,6 +36,8 @@
 struct sd_device {
         RefCount n_ref;
 
+        sd_device *parent;
+
         char *syspath;
         const char *devpath;
         char *sysname;
@@ -47,6 +49,7 @@ struct sd_device {
         dev_t devnum;
 
         bool uevent_loaded;
+        bool parent_set;
 };
 
 static int device_new(sd_device **ret) {
@@ -75,6 +78,7 @@ _public_ sd_device *sd_device_ref(sd_device *device) {
 
 _public_ sd_device *sd_device_unref(sd_device *device) {
         if (device && REFCNT_DEC(device->n_ref) <= 0) {
+                sd_device_unref(device->parent);
                 free(device->syspath);
                 free(device->sysname);
                 free(device->devtype);
@@ -563,4 +567,59 @@ _public_ int sd_device_new_from_device_id(sd_device **ret, const char *id) {
         default:
                 return -EINVAL;
         }
+}
+
+static int device_new_from_child(sd_device **ret, sd_device *child) {
+        _cleanup_free_ char *path = NULL;
+        const char *subdir, *syspath;
+        int r;
+
+        assert(ret);
+        assert(child);
+
+        r = sd_device_get_syspath(child, &syspath);
+        if (r < 0)
+                return r;
+
+        path = strdup(syspath);
+        if (!path)
+                return -ENOMEM;
+        subdir = path + strlen("/sys");
+
+        for (;;) {
+                char *pos;
+
+                pos = strrchr(subdir, '/');
+                if (!pos || pos < subdir + 2)
+                        break;
+
+                *pos = '\0';
+
+                r = sd_device_new_from_syspath(ret, path);
+                if (r < 0)
+                        continue;
+
+                return 0;
+        }
+
+        return -ENOENT;
+}
+
+_public_ int sd_device_get_parent(sd_device *child, sd_device **ret) {
+
+        assert_return(ret, -EINVAL);
+        assert_return(child, -EINVAL);
+
+        if (child->parent_set) {
+                child->parent_set = true;
+
+                (void)device_new_from_child(&child->parent, child);
+        }
+
+        if (!child->parent)
+                return -ENOENT;
+
+        *ret = child->parent;
+
+        return 0;
 }

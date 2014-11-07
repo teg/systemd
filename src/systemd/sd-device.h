@@ -41,6 +41,7 @@ int sd_device_new_from_subsystem_sysname(sd_device **ret, const char *subsystem,
 int sd_device_new_from_device_id(sd_device **ret, const char *id);
 
 int sd_device_get_syspath(sd_device *device, const char **ret);
+int sd_device_get_parent(sd_device *child, sd_device **ret);
 
 _SD_END_DECLARATIONS;
 
