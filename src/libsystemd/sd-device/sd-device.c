@@ -48,8 +48,11 @@ struct sd_device {
         char *devnode;
         dev_t devnum;
 
+        char *subsystem;
+
         bool uevent_loaded;
         bool parent_set;
+        bool subsystem_set;
 };
 
 static int device_new(sd_device **ret) {
@@ -83,6 +86,7 @@ _public_ sd_device *sd_device_unref(sd_device *device) {
                 free(device->sysname);
                 free(device->devtype);
                 free(device->devnode);
+                free(device->subsystem);
 
                 free(device);
         }
@@ -620,6 +624,65 @@ _public_ int sd_device_get_parent(sd_device *child, sd_device **ret) {
                 return -ENOENT;
 
         *ret = child->parent;
+
+        return 0;
+}
+
+static int device_set_subsystem(sd_device *device, const char *_subsystem) {
+        _cleanup_free_ char *subsystem = NULL;
+        int r;
+
+        assert(device);
+        assert(_subsystem);
+
+        subsystem = strdup(_subsystem);
+        if (!subsystem)
+                return -ENOMEM;
+
+        free(device->subsystem);
+        device->subsystem = subsystem;
+        subsystem = NULL;
+
+        device->subsystem_set = true;
+
+        return 0;
+}
+
+_public_ int sd_device_get_subsystem(sd_device *device, const char **ret) {
+        assert_return(ret, -EINVAL);
+        assert_return(device, -EINVAL);
+
+        if (!device->subsystem_set) {
+                _cleanup_free_ char *subsystem = NULL;
+                const char *syspath;
+                char *path;
+                int r;
+
+                /* read 'subsystem' link */
+                r = sd_device_get_syspath(device, &syspath);
+                if (r < 0)
+                        return r;
+
+                path = strappenda(syspath, "/subsystem");
+                r = readlink_value(path, &subsystem);
+                if (r >= 0)
+                        r = device_set_subsystem(device, subsystem);
+                /* use implicit names */
+                else if (path_startswith(device->devpath, "/module/"))
+                        r = device_set_subsystem(device, "module");
+                else if (strstr(device->devpath, "/drivers/"))
+                        r = device_set_subsystem(device, "drivers");
+                else if (path_startswith(device->devpath, "/subsystem/") ||
+                         path_startswith(device->devpath, "/class/") ||
+                         path_startswith(device->devpath, "/buss/"))
+                        r = device_set_subsystem(device, "subsystem");
+                if (r < 0)
+                        return r;
+
+                device->subsystem_set = true;
+        }
+
+        *ret = device->subsystem;
 
         return 0;
 }
