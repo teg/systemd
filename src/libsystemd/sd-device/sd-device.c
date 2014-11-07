@@ -49,10 +49,12 @@ struct sd_device {
         dev_t devnum;
 
         char *subsystem;
+        char *driver;
 
         bool uevent_loaded;
         bool parent_set;
         bool subsystem_set;
+        bool driver_set;
 };
 
 static int device_new(sd_device **ret) {
@@ -87,6 +89,7 @@ _public_ sd_device *sd_device_unref(sd_device *device) {
                 free(device->devtype);
                 free(device->devnode);
                 free(device->subsystem);
+                free(device->driver);
 
                 free(device);
         }
@@ -745,6 +748,53 @@ _public_ int sd_device_get_devnum(sd_device *device, dev_t *devnum) {
                 return r;
 
         *devnum = device->devnum;
+
+        return 0;
+}
+
+static int device_set_driver(sd_device *device, const char *_driver) {
+        char *driver;
+        int r;
+
+        assert(device);
+        assert(_driver);
+
+        driver = strdup(_driver);
+        if (!driver)
+                return -ENOMEM;
+
+        free(device->driver);
+        device->driver = driver;
+
+        device->driver_set = true;
+
+        return 0;
+}
+
+_public_ int sd_device_get_driver(sd_device *device, const char **ret) {
+        assert_return(device, -EINVAL);
+        assert_return(ret, -EINVAL);
+
+        if (!device->driver_set) {
+                _cleanup_free_ char *driver = NULL;
+                const char *syspath;
+                char *path;
+                int r;
+
+                r = sd_device_get_syspath(device, &syspath);
+                if (r < 0)
+                        return r;
+
+                path = strappenda(syspath, "/driver");
+                r = readlink_value(path, &driver);
+                if (r >= 0) {
+                        r = device_set_driver(device, driver);
+                        if (r < 0)
+                                return r;
+                }
+        }
+
+        *ret = device->driver;
 
         return 0;
 }
