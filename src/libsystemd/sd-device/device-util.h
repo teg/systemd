@@ -31,3 +31,8 @@ DEFINE_TRIVIAL_CLEANUP_FUNC(sd_device*, sd_device_unref);
         for (key = sd_device_get_property_first(device, &(value)); \
              key;                                                  \
              key = sd_device_get_property_next(device, &(value)))
+
+#define FOREACH_DEVICE_TAG(device, tag)             \
+        for (tag = sd_device_get_tag_first(device); \
+             tag;                                   \
+             tag = sd_device_get_tag_next(device))

@@ -45,6 +45,8 @@ struct sd_device {
         bool properties_modified;
         Hashmap *sysattrs;
         Set *tags;
+        Iterator tags_iterator;
+        bool tags_modified;
 
         char *syspath;
         const char *devpath;
@@ -210,6 +212,7 @@ static int device_add_tag(sd_device *device, const char *tag) {
         if (r < 0)
                 return r;
 
+        device->tags_modified = true;
         device->tags_uptodate = false;
 
         return 0;
@@ -1289,6 +1292,24 @@ _public_ int sd_device_has_tag(sd_device *device, const char *tag, int *has_tag)
         *has_tag = set_contains(device->tags, tag);
 
         return 0;
+}
+
+_public_ const char *sd_device_get_tag_first(sd_device *device) {
+        assert_return(device, NULL);
+
+        device->tags_modified = false;
+        device->tags_iterator = ITERATOR_FIRST;
+
+        return set_iterate(device->tags, &device->tags_iterator);
+}
+
+_public_ const char *sd_device_get_tag_next(sd_device *device) {
+        assert_return(device, NULL);
+
+        if (device->tags_modified)
+                return NULL;
+
+        return set_iterate(device->tags, &device->tags_iterator);
 }
 
 _public_ int sd_device_get_sysattr_value(sd_device *device, const char *sysattr, const char **_value) {
