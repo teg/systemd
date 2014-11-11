@@ -1203,3 +1203,13 @@ _public_ int sd_device_get_property_value(sd_device *device, const char *key, co
 
         return 0;
 }
+
+_public_ int sd_device_has_tag(sd_device *device, const char *tag, int *has_tag) {
+        assert_return(device, -EINVAL);
+        assert_return(tag, -EINVAL);
+        assert_return(has_tag, -EINVAL);
+
+        *has_tag = set_contains(device->tags, tag);
+
+        return 0;
+}
