@@ -29,6 +29,7 @@
 #include "strxcpyx.h"
 #include "fileio.h"
 #include "hashmap.h"
+#include "set.h"
 
 #include "sd-device.h"
 
@@ -39,6 +40,7 @@ struct sd_device {
 
         sd_device *parent;
         OrderedHashmap *properties;
+        Set *tags;
 
         char *syspath;
         const char *devpath;
@@ -53,10 +55,18 @@ struct sd_device {
         char *subsystem;
         char *driver;
 
+        char *id_filename;
+
+        bool is_initialized;
+        uint64_t usec_initialized;
+
         bool uevent_loaded;
+        bool db_loaded;
         bool parent_set;
         bool subsystem_set;
         bool driver_set;
+
+        bool tags_uptodate;
 };
 
 static int device_new(sd_device **ret) {
@@ -69,6 +79,7 @@ static int device_new(sd_device **ret) {
                 return -ENOMEM;
 
         device->n_ref = REFCNT_INIT;
+        device->tags_uptodate = true;
 
         *ret = device;
         device = NULL;
@@ -92,8 +103,11 @@ _public_ sd_device *sd_device_unref(sd_device *device) {
                 free(device->devnode);
                 free(device->subsystem);
                 free(device->driver);
+                free(device->id_filename);
 
                 ordered_hashmap_free_free_free(device->properties);
+
+                set_free_free(device->tags);
 
                 free(device);
         }
@@ -135,6 +149,25 @@ static int device_add_property(sd_device *device, const char *_key, const char *
 
                 value = ordered_hashmap_remove2(device->properties, _key, (void**) &key);
         }
+
+        return 0;
+}
+
+static int device_add_tag(sd_device *device, const char *tag) {
+        int r;
+
+        assert(device);
+        assert(tag);
+
+        r = set_ensure_allocated(&device->tags, &string_hash_ops);
+        if (r < 0)
+                return r;
+
+        r = set_put_strdup(device->tags, tag);
+        if (r < 0)
+                return r;
+
+        device->tags_uptodate = false;
 
         return 0;
 }
@@ -710,6 +743,10 @@ static int device_set_subsystem(sd_device *device, const char *_subsystem) {
         if (!subsystem)
                 return -ENOMEM;
 
+        r = device_add_property(device, "SUBSYSTEM", subsystem);
+        if (r < 0)
+                return r;
+
         free(device->subsystem);
         device->subsystem = subsystem;
         subsystem = NULL;
@@ -831,6 +868,10 @@ static int device_set_driver(sd_device *device, const char *_driver) {
         if (!driver)
                 return -ENOMEM;
 
+        r = device_add_property(device, "DRIVER", driver);
+        if (r < 0)
+                return r;
+
         free(device->driver);
         device->driver = driver;
 
@@ -863,6 +904,236 @@ _public_ int sd_device_get_driver(sd_device *device, const char **ret) {
         }
 
         *ret = device->driver;
+
+        return 0;
+}
+
+static int device_get_id_filename(sd_device *device, const char **ret) {
+        assert(device);
+        assert(ret);
+
+        if (!device->id_filename) {
+                _cleanup_free_ char *id = NULL;
+                const char *subsystem;
+                dev_t devnum;
+                int ifindex, r;
+
+                r = sd_device_get_subsystem(device, &subsystem);
+                if (r < 0)
+                        return r;
+
+                r = sd_device_get_devnum(device, &devnum);
+                if (r < 0)
+                        return r;
+
+                r = device_get_ifindex(device, &ifindex);
+                if (r < 0)
+                        return r;
+
+                if (major(devnum) > 0) {
+                        /* use dev_t -- b259:131072, c254:0 */
+                        r = asprintf(&id, "%c%u:%u",
+                                     streq(subsystem, "block") ? 'b' : 'c',
+                                     major(devnum), minor(devnum));
+                        if (r < 0)
+                                return -errno;
+                } else if (ifindex > 0) {
+                        /* use netdev ifindex -- n3 */
+                        r = asprintf(&id, "n%u", ifindex);
+                        if (r < 0)
+                                return -errno;
+                } else {
+                        /* use $subsys:$sysname -- pci:0000:00:1f.2
+                         * sysname() has '!' translated, get it from devpath
+                         */
+                        const char *sysname;
+
+                        sysname = basename(device->devpath);
+                        if (!sysname)
+                                return -EINVAL;
+
+                        r = asprintf(&id, "+%s:%s", subsystem, sysname);
+                        if (r < 0)
+                                return -errno;
+                }
+
+                device->id_filename = id;
+                id = NULL;
+        }
+
+        *ret = device->id_filename;
+
+        return 0;
+}
+
+static int device_add_property_from_string(sd_device *device, const char *str) {
+        _cleanup_free_ char *key = NULL;
+        char *value;
+
+        assert(device);
+        assert(str);
+
+        key = strdup(str);
+        if (!key)
+                return -ENOMEM;
+
+        value = strchr(key, '=');
+        if (!value)
+                return -EINVAL;
+
+        *value = '\0';
+
+        if (isempty(++value))
+                value = NULL;
+
+        return device_add_property(device, key, value);
+}
+
+static int device_set_usec_initialized(sd_device *device, const char *initialized) {
+        uint64_t usec_initialized;
+        int r;
+
+        assert(device);
+        assert(initialized);
+
+        r = safe_atou64(initialized, &usec_initialized);
+        if (r < 0)
+                return r;
+
+        r = device_add_property(device, "USEC_INITIALIZED", initialized);
+        if (r < 0)
+                return r;
+
+        device->usec_initialized = usec_initialized;
+
+        return 0;
+}
+
+static int handle_db_line(sd_device *device, char key, const char *value) {
+        int r;
+
+        assert(device);
+        assert(value);
+
+        switch (key) {
+        case 'E':
+                r = device_add_property_from_string(device, value);
+                if (r < 0)
+                        return r;
+
+                break;
+        case 'G':
+                r = device_add_tag(device, value);
+                if (r < 0)
+                        return r;
+
+                break;
+        case 'I':
+                r = device_set_usec_initialized(device, value);
+                if (r < 0)
+                        return r;
+
+                break;
+        case 'L':
+        case 'W':
+                /* TODO */
+                break;
+        default:
+                log_debug("device db: unknown key '%c'", key);
+        }
+
+        return 0;
+}
+
+static int device_read_db(sd_device *device) {
+        _cleanup_free_ char *db = NULL;
+        char *path;
+        const char *id, *value;
+        char key;
+        size_t db_len;
+        unsigned i;
+        int r;
+
+        enum {
+                PRE_KEY,
+                KEY,
+                PRE_VALUE,
+                VALUE,
+                INVALID_LINE,
+        } state = PRE_KEY;
+
+        if (device->db_loaded)
+                return 0;
+
+        r = device_get_id_filename(device, &id);
+        if (r < 0)
+                return r;
+
+        path = strappenda("/run/udev/data/", id);
+
+        r = read_full_file(path, &db, &db_len);
+        if (r < 0) {
+                if (r == -ENOENT)
+                        return 0;
+                else {
+                        log_debug("sd-device: failed to read db '%s': %s", path, strerror(-r));
+                        return r;
+                }
+        }
+
+        /* devices with a database entry are initialized */
+        device->is_initialized = true;
+
+        for (i = 0; i < db_len; i++) {
+                switch (state) {
+                case PRE_KEY:
+                        if (!strchr(NEWLINE, db[i])) {
+                                key = db[i];
+
+                                state = KEY;
+                        }
+
+                        break;
+                case KEY:
+                        if (db[i] != ':') {
+                                log_debug("sd-device: ignoring invalid db entry with key '%c'", key);
+
+                                state = INVALID_LINE;
+                        } else {
+                                db[i] = '\0';
+
+                                state = PRE_VALUE;
+                        }
+
+                        break;
+                case PRE_VALUE:
+                        value = &db[i];
+
+                        state = VALUE;
+
+                        break;
+                case INVALID_LINE:
+                        if (strchr(NEWLINE, db[i]))
+                                state = PRE_KEY;
+
+                        break;
+                case VALUE:
+                        if (strchr(NEWLINE, db[i])) {
+                                db[i] = '\0';
+                                r = handle_db_line(device, key, value);
+                                if (r < 0)
+                                        log_debug("sd-device: failed to handle db entry '%c:%s': %s", key, value, strerror(-r));
+
+                                state = PRE_KEY;
+                        }
+
+                        break;
+                default:
+                        assert_not_reached("invalid state when parsing db");
+                }
+        }
+
+        device->db_loaded = true;
 
         return 0;
 }
