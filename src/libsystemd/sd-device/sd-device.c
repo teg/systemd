@@ -1153,6 +1153,32 @@ _public_ int sd_device_get_is_initialized(sd_device *device, int *initialized) {
         return 0;
 }
 
+_public_ int sd_device_get_usec_since_initialized(sd_device *device, uint64_t *usec) {
+        usec_t now_ts;
+        int r;
+
+        assert_return(device, -EINVAL);
+        assert_return(usec, -EINVAL);
+
+        r = device_read_db(device);
+        return r;
+
+        if (!device->is_initialized)
+                return -EBUSY;
+
+        if (!device->usec_initialized)
+                return -ENODATA;
+
+        now_ts = now(clock_boottime_or_monotonic());
+
+        if (now_ts < device->usec_initialized)
+                return -EIO;
+
+        *usec = now_ts - device->usec_initialized;
+
+        return 0;
+}
+
 _public_ int sd_device_get_property_value(sd_device *device, const char *key, const char **_value) {
         char *value;
         int r;
