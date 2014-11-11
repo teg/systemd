@@ -41,6 +41,8 @@ struct sd_device {
 
         sd_device *parent;
         OrderedHashmap *properties;
+        Iterator properties_iterator;
+        bool properties_modified;
         Hashmap *sysattrs;
         Set *tags;
 
@@ -142,6 +144,7 @@ static int device_add_property(sd_device *device, const char *_key, const char *
                 r = ordered_hashmap_replace(device->properties, key, value);
                 if (r < 0)
                         return r;
+                device->properties_modified = true;
 
                 key = NULL;
                 value = NULL;
@@ -150,6 +153,7 @@ static int device_add_property(sd_device *device, const char *_key, const char *
                 _cleanup_free_ char *value = NULL;
 
                 value = ordered_hashmap_remove2(device->properties, _key, (void**) &key);
+                device->properties_modified = true;
         }
 
         return 0;
@@ -1241,6 +1245,40 @@ _public_ int sd_device_get_property_value(sd_device *device, const char *key, co
         *_value = value;
 
         return 0;
+}
+
+_public_ const char *sd_device_get_property_first(sd_device *device, const char **_value) {
+        const char *key;
+        const char *value;
+
+        assert_return(device, NULL);
+
+        device->properties_modified = false;
+        device->properties_iterator = ITERATOR_FIRST;
+
+        value = ordered_hashmap_iterate(device->properties, &device->properties_iterator, (const void**)&key);
+
+        if (_value)
+                *_value = value;
+
+        return key;
+}
+
+_public_ const char *sd_device_get_property_next(sd_device *device, const char **_value) {
+        const char *key;
+        const char *value;
+
+        assert_return(device, NULL);
+
+        if (device->properties_modified)
+                return NULL;
+
+        value = ordered_hashmap_iterate(device->properties, &device->properties_iterator, (const void**)&key);
+
+        if (_value)
+                *_value = value;
+
+        return key;
 }
 
 _public_ int sd_device_has_tag(sd_device *device, const char *tag, int *has_tag) {
