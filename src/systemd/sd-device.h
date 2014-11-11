@@ -54,10 +54,14 @@ int sd_device_get_property_value(sd_device *device, const char *key, const char 
 int sd_device_has_tag(sd_device *device, const char *tag, int *has_tag);
 int sd_device_get_sysattr_value(sd_device *device, const char *sysattr, const char **_value);
 
+int sd_device_set_sysattr_value(sd_device *device, const char *sysattr, char *value);
+
 const char *sd_device_get_property_first(sd_device *device, const char **value);
 const char *sd_device_get_property_next(sd_device *device, const char **value);
 const char *sd_device_get_tag_first(sd_device *device);
 const char *sd_device_get_tag_next(sd_device *device);
+const char *sd_device_get_sysattr_first(sd_device *device);
+const char *sd_device_get_sysattr_next(sd_device *device);
 
 _SD_END_DECLARATIONS;
 

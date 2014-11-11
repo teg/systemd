@@ -43,7 +43,12 @@ struct sd_device {
         OrderedHashmap *properties;
         Iterator properties_iterator;
         bool properties_modified;
-        Hashmap *sysattrs;
+        Hashmap *sysattr_values;
+        Iterator sysattr_values_iterator;
+        bool sysattr_values_modified;
+        Set *sysattrs;
+        Iterator sysattrs_iterator;
+        bool sysattrs_read;
         Set *tags;
         Iterator tags_iterator;
         bool tags_modified;
@@ -112,7 +117,8 @@ _public_ sd_device *sd_device_unref(sd_device *device) {
                 free(device->id_filename);
 
                 ordered_hashmap_free_free_free(device->properties);
-                hashmap_free_free_free(device->sysattrs);
+                hashmap_free_free_free(device->sysattr_values);
+                set_free_free(device->sysattrs);
                 set_free_free(device->tags);
 
                 free(device);
@@ -161,7 +167,8 @@ static int device_add_property(sd_device *device, const char *_key, const char *
         return 0;
 }
 
-static int device_add_sysattr(sd_device *device, const char *_key, const char *_value) {
+/* replaces the value if it already exists */
+static int device_add_sysattr_value(sd_device *device, const char *_key, const char *_value) {
         _cleanup_free_ char *key = NULL;
         _cleanup_free_ char *value = NULL;
         int r;
@@ -169,33 +176,64 @@ static int device_add_sysattr(sd_device *device, const char *_key, const char *_
         assert(device);
         assert(_key);
 
-
-        r = hashmap_ensure_allocated(&device->sysattrs, &string_hash_ops);
+        r = hashmap_ensure_allocated(&device->sysattr_values, &string_hash_ops);
         if (r < 0)
                 return r;
 
-        key = strdup(_key);
-        if (!key)
-                return -ENOMEM;
+        value = hashmap_remove2(device->sysattr_values, _key, (void **)&key);
+        if (!key) {
+                key = strdup(_key);
+                if (!key)
+                        return -ENOMEM;
+        }
+
+        free(value);
+        value = NULL;
 
         if (_value) {
                 value = strdup(_value);
                 if (!value)
                         return -ENOMEM;
-        } else {
-                value = strdup("");
-                if (!value)
-                        return -ENOMEM;
         }
 
-        r = hashmap_put(device->sysattrs, key, value);
+        r = hashmap_put(device->sysattr_values, key, value);
         if (r < 0)
                 return r;
+
+        device->sysattr_values_modified = true;
 
         key = NULL;
         value = NULL;
 
         return 0;
+}
+
+static int device_get_sysattr_value(sd_device *device, const char *_key, const char **_value) {
+        const char *key, *value;
+
+        assert(device);
+        assert(_key);
+
+        value = hashmap_get2(device->sysattr_values, _key, (void **) &key);
+        if (!key)
+                return -ENOENT;
+
+        if (_value)
+                *_value = value;
+
+        return 0;
+}
+
+static void device_remove_sysattr_value(sd_device *device, const char *_key) {
+        _cleanup_free_ char *key = NULL;
+        _cleanup_free_ char *value = NULL;
+
+        assert(device);
+        assert(_key);
+
+        value = hashmap_remove2(device->sysattr_values, _key, (void **) &key);
+
+        return;
 }
 
 static int device_add_tag(sd_device *device, const char *tag) {
@@ -1312,26 +1350,31 @@ _public_ const char *sd_device_get_tag_next(sd_device *device) {
         return set_iterate(device->tags, &device->tags_iterator);
 }
 
+/*
+ * We cache all sysattr lookups. If an attribute does not exist, it is stored
+ * with a NULL value in the cache, otherwise the returned string is stored */
 _public_ int sd_device_get_sysattr_value(sd_device *device, const char *sysattr, const char **_value) {
-        _cleanup_close_ int fd = -1;
         _cleanup_free_ char *value = NULL;
-        const char *syspath;
+        const char *syspath, *cached_value = NULL;
         char *path;
         struct stat statbuf;
         int r;
 
         assert_return(device, -EINVAL);
         assert_return(sysattr, -EINVAL);
-        assert_return(_value, -EINVAL);
 
         /* look for possibly already cached result */
-        value = hashmap_get(device->sysattrs, sysattr);
-        if (value) {
-                if (isempty(value))
+        r = device_get_sysattr_value(device, sysattr, &cached_value);
+        if (r != -ENOENT) {
+                if (r < 0)
+                        return r;
+
+                if (!cached_value)
+                        /* we looked up the sysattr before and it did not exist */
                         return -ENOENT;
 
-                *_value = value;
-                value = NULL;
+                if (_value)
+                        *_value = cached_value;
 
                 return 0;
         }
@@ -1343,7 +1386,8 @@ _public_ int sd_device_get_sysattr_value(sd_device *device, const char *sysattr,
         path = strappenda(syspath, "/", sysattr);
         r = lstat(path, &statbuf);
         if (r < 0) {
-                r = device_add_sysattr(device, sysattr, NULL);
+                /* remember that we could not access the sysattr */
+                r = device_add_sysattr_value(device, sysattr, NULL);
                 if (r < 0)
                         return r;
 
@@ -1364,13 +1408,19 @@ _public_ int sd_device_get_sysattr_value(sd_device *device, const char *sysattr,
                 /* skip non-readable files */
                 return -EPERM;
         } else {
+                size_t size;
+
                 /* read attribute value */
-                r = read_one_line_file(path, &value);
+                r = read_full_file(path, &value, &size);
                 if (r < 0)
                         return r;
+
+                /* drop trailing newlines */
+                while (size > 0 && value[--size] == '\n')
+                        value[size] = '\0';
         }
 
-        r = device_add_sysattr(device, sysattr, value);
+        r = device_add_sysattr_value(device, sysattr, value);
         if (r < 0)
                 return r;
 
@@ -1378,4 +1428,154 @@ _public_ int sd_device_get_sysattr_value(sd_device *device, const char *sysattr,
         value = NULL;
 
         return 0;
+}
+
+/* set the attribute and save it in the cache. If a NULL value is passed the
+ * attribute is cleared from the cache */
+_public_ int sd_device_set_sysattr_value(sd_device *device, const char *sysattr, char *value) {
+        _cleanup_close_ int fd = -1;
+        const char *syspath;
+        char *path;
+        struct stat statbuf;
+        size_t value_len = 0;
+        ssize_t size;
+        int r;
+
+        assert_return(device, -EINVAL);
+        assert_return(sysattr, -EINVAL);
+
+        if (!value) {
+                device_remove_sysattr_value(device, sysattr);
+
+                return 0;
+        }
+
+        r = sd_device_get_syspath(device, &syspath);
+        if (r < 0)
+                return r;
+
+        path = strappenda(syspath, "/", sysattr);
+        r = lstat(path, &statbuf);
+        if (r < 0) {
+                r = device_add_sysattr_value(device, sysattr, "");
+                if (r < 0)
+                        return r;
+
+                return -ENXIO;
+        }
+
+        if (S_ISLNK(statbuf.st_mode))
+                return -EINVAL;
+
+        /* skip directories */
+        if (S_ISDIR(statbuf.st_mode))
+                return -EISDIR;
+
+        /* skip non-readable files */
+        if ((statbuf.st_mode & S_IRUSR) == 0)
+                return -EACCES;
+
+        value_len = strlen(value);
+
+        /* drop trailing newlines */
+        while (value_len > 0 && value[--value_len] == '\n')
+                value[value_len] = '\0';
+
+        /* value length is limited to 4k */
+        if (value_len > 4096)
+                return -EINVAL;
+
+        fd = open(path, O_WRONLY | O_CLOEXEC);
+        if (fd < 0)
+                return -errno;
+
+        size = write(fd, value, value_len);
+        if (size < 0)
+                return -errno;
+
+        if ((size_t)size != value_len)
+                return -EIO;
+
+        r = device_add_sysattr_value(device, sysattr, value);
+        if (r < 0)
+                return r;
+
+        return 0;
+}
+
+static int device_sysattrs_read_all(sd_device *device) {
+        _cleanup_closedir_ DIR *dir = NULL;
+        const char *syspath;
+        struct dirent *dent;
+        int r;
+
+        assert(device);
+
+        if (device->sysattrs_read)
+                return 0;
+
+        r = sd_device_get_syspath(device, &syspath);
+        if (r < 0)
+                return r;
+
+        dir = opendir(syspath);
+        if (!dir)
+                return -errno;
+
+        r = set_ensure_allocated(&device->sysattrs, &string_hash_ops);
+        if (r < 0)
+                return r;
+
+        for (dent = readdir(dir); dent != NULL; dent = readdir(dir)) {
+                _cleanup_free_ char *sysattr = NULL;
+                char *path;
+                struct stat statbuf;
+
+                /* only handle symlinks and regular files */
+                if (dent->d_type != DT_LNK && dent->d_type != DT_REG)
+                        continue;
+
+                path = strappenda(syspath, "/", dent->d_name);
+
+                if (lstat(path, &statbuf) != 0)
+                        continue;
+
+                if (!(statbuf.st_mode & S_IRUSR))
+                        continue;
+
+                r = set_put_strdup(device->sysattrs, dent->d_name);
+                if (r < 0)
+                        return r;
+        }
+
+        device->sysattrs_read = true;
+
+        return 0;
+}
+
+_public_ const char *sd_device_get_sysattr_first(sd_device *device) {
+        int r;
+
+        assert_return(device, NULL);
+
+        if (!device->sysattrs_read) {
+                r = device_sysattrs_read_all(device);
+                if (r < 0) {
+                        errno = -r;
+                        return NULL;
+                }
+        }
+
+        device->sysattrs_iterator = ITERATOR_FIRST;
+
+        return set_iterate(device->sysattrs, &device->sysattrs_iterator);
+}
+
+_public_ const char *sd_device_get_sysattr_next(sd_device *device) {
+        assert_return(device, NULL);
+
+        if (!device->sysattrs_read)
+                return NULL;
+
+        return set_iterate(device->sysattrs, &device->sysattrs_iterator);
 }
