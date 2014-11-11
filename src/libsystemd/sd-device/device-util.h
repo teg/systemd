@@ -41,3 +41,8 @@ DEFINE_TRIVIAL_CLEANUP_FUNC(sd_device*, sd_device_unref);
         for (attr = sd_device_get_sysattr_first(device); \
              attr;                                       \
              attr = sd_device_get_sysattr_next(device))
+
+#define FOREACH_DEVICE_DEVLINK(device, devlink)             \
+        for (devlink = sd_device_get_devlink_first(device); \
+             devlink;                                   \
+             devlink = sd_device_get_devlink_next(device))

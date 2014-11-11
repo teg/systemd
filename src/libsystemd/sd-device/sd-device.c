@@ -52,6 +52,9 @@ struct sd_device {
         Set *tags;
         Iterator tags_iterator;
         bool tags_modified;
+        Set *devlinks;
+        Iterator devlinks_iterator;
+        bool devlinks_modified;
 
         char *syspath;
         const char *devpath;
@@ -78,6 +81,7 @@ struct sd_device {
         bool driver_set;
 
         bool tags_uptodate;
+        bool devlinks_uptodate;
 };
 
 static int device_new(sd_device **ret) {
@@ -91,6 +95,7 @@ static int device_new(sd_device **ret) {
 
         device->n_ref = REFCNT_INIT;
         device->tags_uptodate = true;
+        device->devlinks_uptodate = true;
 
         *ret = device;
         device = NULL;
@@ -120,6 +125,7 @@ _public_ sd_device *sd_device_unref(sd_device *device) {
                 hashmap_free_free_free(device->sysattr_values);
                 set_free_free(device->sysattrs);
                 set_free_free(device->tags);
+                set_free_free(device->devlinks);
 
                 free(device);
         }
@@ -252,6 +258,26 @@ static int device_add_tag(sd_device *device, const char *tag) {
 
         device->tags_modified = true;
         device->tags_uptodate = false;
+
+        return 0;
+}
+
+static int device_add_devlink(sd_device *device, const char *devlink) {
+        int r;
+
+        assert(device);
+        assert(devlink);
+
+        r = set_ensure_allocated(&device->devlinks, &string_hash_ops);
+        if (r < 0)
+                return r;
+
+        r = set_put_strdup(device->devlinks, devlink);
+        if (r < 0)
+                return r;
+
+        device->devlinks_modified = true;
+        device->devlinks_uptodate = false;
 
         return 0;
 }
@@ -1094,12 +1120,20 @@ static int device_set_usec_initialized(sd_device *device, const char *initialize
 }
 
 static int handle_db_line(sd_device *device, char key, const char *value) {
+        char *path;
         int r;
 
         assert(device);
         assert(value);
 
         switch (key) {
+        case 'S':
+                path = strappenda("/dev/", value);
+                r = device_add_devlink(device, path);
+                if (r < 0)
+                        return r;
+
+                break;
         case 'E':
                 r = device_add_property_from_string(device, value);
                 if (r < 0)
@@ -1350,8 +1384,25 @@ _public_ const char *sd_device_get_tag_next(sd_device *device) {
         return set_iterate(device->tags, &device->tags_iterator);
 }
 
-/*
- * We cache all sysattr lookups. If an attribute does not exist, it is stored
+_public_ const char *sd_device_get_devlink_first(sd_device *device) {
+        assert_return(device, NULL);
+
+        device->devlinks_modified = false;
+        device->devlinks_iterator = ITERATOR_FIRST;
+
+        return set_iterate(device->devlinks, &device->devlinks_iterator);
+}
+
+_public_ const char *sd_device_get_devlink_next(sd_device *device) {
+        assert_return(device, NULL);
+
+        if (device->devlinks_modified)
+                return NULL;
+
+        return set_iterate(device->devlinks, &device->devlinks_iterator);
+}
+
+/* We cache all sysattr lookups. If an attribute does not exist, it is stored
  * with a NULL value in the cache, otherwise the returned string is stored */
 _public_ int sd_device_get_sysattr_value(sd_device *device, const char *sysattr, const char **_value) {
         _cleanup_free_ char *value = NULL;

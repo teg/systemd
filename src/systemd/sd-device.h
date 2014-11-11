@@ -62,6 +62,8 @@ const char *sd_device_get_tag_first(sd_device *device);
 const char *sd_device_get_tag_next(sd_device *device);
 const char *sd_device_get_sysattr_first(sd_device *device);
 const char *sd_device_get_sysattr_next(sd_device *device);
+const char *sd_device_get_devlink_first(sd_device *device);
+const char *sd_device_get_devlink_next(sd_device *device);
 
 _SD_END_DECLARATIONS;
 
