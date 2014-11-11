@@ -30,6 +30,7 @@
 #include "fileio.h"
 #include "hashmap.h"
 #include "set.h"
+#include "strv.h"
 
 #include "sd-device.h"
 
@@ -40,6 +41,7 @@ struct sd_device {
 
         sd_device *parent;
         OrderedHashmap *properties;
+        Hashmap *sysattrs;
         Set *tags;
 
         char *syspath;
@@ -106,7 +108,7 @@ _public_ sd_device *sd_device_unref(sd_device *device) {
                 free(device->id_filename);
 
                 ordered_hashmap_free_free_free(device->properties);
-
+                hashmap_free_free_free(device->sysattrs);
                 set_free_free(device->tags);
 
                 free(device);
@@ -149,6 +151,43 @@ static int device_add_property(sd_device *device, const char *_key, const char *
 
                 value = ordered_hashmap_remove2(device->properties, _key, (void**) &key);
         }
+
+        return 0;
+}
+
+static int device_add_sysattr(sd_device *device, const char *_key, const char *_value) {
+        _cleanup_free_ char *key = NULL;
+        _cleanup_free_ char *value = NULL;
+        int r;
+
+        assert(device);
+        assert(_key);
+
+
+        r = hashmap_ensure_allocated(&device->sysattrs, &string_hash_ops);
+        if (r < 0)
+                return r;
+
+        key = strdup(_key);
+        if (!key)
+                return -ENOMEM;
+
+        if (_value) {
+                value = strdup(_value);
+                if (!value)
+                        return -ENOMEM;
+        } else {
+                value = strdup("");
+                if (!value)
+                        return -ENOMEM;
+        }
+
+        r = hashmap_put(device->sysattrs, key, value);
+        if (r < 0)
+                return r;
+
+        key = NULL;
+        value = NULL;
 
         return 0;
 }
@@ -1195,7 +1234,7 @@ _public_ int sd_device_get_property_value(sd_device *device, const char *key, co
         if (r < 0)
                 return r;
 
-        value = hashmap_get(device->properties, key);
+        value = ordered_hashmap_get(device->properties, key);
         if (!value)
                 return -ENOENT;
 
@@ -1210,6 +1249,74 @@ _public_ int sd_device_has_tag(sd_device *device, const char *tag, int *has_tag)
         assert_return(has_tag, -EINVAL);
 
         *has_tag = set_contains(device->tags, tag);
+
+        return 0;
+}
+
+_public_ int sd_device_get_sysattr_value(sd_device *device, const char *sysattr, const char **_value) {
+        _cleanup_close_ int fd = -1;
+        _cleanup_free_ char *value = NULL;
+        const char *syspath;
+        char *path;
+        struct stat statbuf;
+        int r;
+
+        assert_return(device, -EINVAL);
+        assert_return(sysattr, -EINVAL);
+        assert_return(_value, -EINVAL);
+
+        /* look for possibly already cached result */
+        value = hashmap_get(device->sysattrs, sysattr);
+        if (value) {
+                if (isempty(value))
+                        return -ENOENT;
+
+                *_value = value;
+                value = NULL;
+
+                return 0;
+        }
+
+        r = sd_device_get_syspath(device, &syspath);
+        if (r < 0)
+                return r;
+
+        path = strappenda(syspath, "/", sysattr);
+        r = lstat(path, &statbuf);
+        if (r < 0) {
+                r = device_add_sysattr(device, sysattr, NULL);
+                if (r < 0)
+                        return r;
+
+                return -ENOENT;
+        } else if (S_ISLNK(statbuf.st_mode)) {
+                /* Some core links return only the last element of the target path,
+                 * these are just values, the paths should not be exposed. */
+                if (STR_IN_SET(sysattr, "driver", "subsystem", "module")) {
+                        r = readlink_value(path, &value);
+                        if (r < 0)
+                                return r;
+                } else
+                        return -EINVAL;
+        } else if (S_ISDIR(statbuf.st_mode)) {
+                /* skip directories */
+                return -EINVAL;
+        } else if (!(statbuf.st_mode & S_IRUSR)) {
+                /* skip non-readable files */
+                return -EPERM;
+        } else {
+                /* read attribute value */
+                r = read_one_line_file(path, &value);
+                if (r < 0)
+                        return r;
+        }
+
+        r = device_add_sysattr(device, sysattr, value);
+        if (r < 0)
+                return r;
+
+        *_value = value;
+        value = NULL;
 
         return 0;
 }
