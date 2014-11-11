@@ -1152,3 +1152,28 @@ _public_ int sd_device_get_is_initialized(sd_device *device, int *initialized) {
 
         return 0;
 }
+
+_public_ int sd_device_get_property_value(sd_device *device, const char *key, const char **_value) {
+        char *value;
+        int r;
+
+        assert_return(device, -EINVAL);
+        assert_return(key, -EINVAL);
+        assert_return(_value, -EINVAL);
+
+        r = device_read_uevent_file(device);
+        if (r < 0)
+                return r;
+
+        r = device_read_db(device);
+        if (r < 0)
+                return r;
+
+        value = hashmap_get(device->properties, key);
+        if (!value)
+                return -ENOENT;
+
+        *_value = value;
+
+        return 0;
+}
