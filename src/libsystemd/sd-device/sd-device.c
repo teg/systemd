@@ -1137,3 +1137,18 @@ static int device_read_db(sd_device *device) {
 
         return 0;
 }
+
+_public_ int sd_device_get_is_initialized(sd_device *device, int *initialized) {
+        int r;
+
+        assert_return(device, -EINVAL);
+        assert_return(initialized, -EINVAL);
+
+        r = device_read_db(device);
+        if (r < 0)
+                return r;
+
+        *initialized = device->is_initialized;
+
+        return 0;
+}
