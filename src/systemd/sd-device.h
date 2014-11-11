@@ -37,6 +37,8 @@ sd_device *sd_device_unref(sd_device *device);
 
 int sd_device_new_from_syspath(sd_device **ret, const char *syspath);
 
+int sd_device_get_syspath(sd_device *device, const char **ret);
+
 _SD_END_DECLARATIONS;
 
 #endif

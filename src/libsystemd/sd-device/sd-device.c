@@ -147,6 +147,17 @@ static int device_set_syspath(sd_device *device, const char *_syspath) {
         return 0;
 }
 
+_public_ int sd_device_get_syspath(sd_device *device, const char **ret) {
+        assert_return(device, -EINVAL);
+        assert_return(ret, -EINVAL);
+
+        assert(path_startswith(device->syspath, "/sys/"));
+
+        *ret = device->syspath;
+
+        return 0;
+}
+
 _public_ int sd_device_new_from_syspath(sd_device **ret, const char *syspath) {
         _cleanup_device_unref_ sd_device *device = NULL;
         int r;
