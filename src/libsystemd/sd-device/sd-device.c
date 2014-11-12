@@ -733,3 +733,18 @@ _public_ int sd_device_get_parent_with_subsystem_devtype(sd_device *child, const
 
         return 0;
 }
+
+_public_ int sd_device_get_devnum(sd_device *device, dev_t *devnum) {
+        int r;
+
+        assert_return(device, -EINVAL);
+        assert_return(devnum, -EINVAL);
+
+        r = device_read_uevent_file(device);
+        if (r < 0)
+                return r;
+
+        *devnum = device->devnum;
+
+        return 0;
+}
