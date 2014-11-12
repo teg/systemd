@@ -701,3 +701,35 @@ _public_ int sd_device_get_devtype(sd_device *device, const char **devtype) {
 
         return 0;
 }
+
+_public_ int sd_device_get_parent_with_subsystem_devtype(sd_device *child, const char *subsystem, const char *devtype, sd_device **ret) {
+        sd_device *parent = NULL;
+        int r;
+
+        assert_return(child, -EINVAL);
+        assert_return(subsystem, -EINVAL);
+
+        r = sd_device_get_parent(child, &parent);
+        while (r >= 0) {
+                const char *parent_subsystem;
+                const char *parent_devtype;
+
+                (void)sd_device_get_subsystem(parent, &parent_subsystem);
+                if (streq_ptr(parent_subsystem, subsystem)) {
+                        if (!devtype)
+                                break;
+
+                        (void)sd_device_get_devtype(parent, &parent_devtype);
+                        if (streq_ptr(parent_devtype, devtype))
+                                break;
+                }
+                r = sd_device_get_parent(parent, &parent);
+        }
+
+        if (r < 0)
+                return r;
+
+        *ret = parent;
+
+        return 0;
+}
