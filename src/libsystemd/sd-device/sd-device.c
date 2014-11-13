@@ -1297,6 +1297,58 @@ _public_ int sd_device_get_usec_since_initialized(sd_device *device, uint64_t *u
         return 0;
 }
 
+static int device_properties_prepare(sd_device *device) {
+        int r;
+
+        r = device_read_uevent_file(device);
+        if (r < 0)
+                return r;
+
+        r = device_read_db(device);
+        if (r < 0)
+                return r;
+
+        if (!device->devlinks_uptodate) {
+                char *devlinks = NULL;
+                const char *devlink;
+
+                devlink = sd_device_get_devlink_first(device);
+                if (devlink)
+                        devlinks = strdupa(devlink);
+
+                while ((devlink = sd_device_get_devlink_next(device)))
+                        devlinks = strappenda(devlinks, " ", devlink);
+
+                r = device_add_property(device, "DEVLINKS", devlinks);
+                if (r < 0)
+                        return r;
+
+                device->devlinks_uptodate = true;
+        }
+
+        if (!device->tags_uptodate) {
+                char *tags = NULL;
+                const char *tag;
+
+                tag = sd_device_get_tag_first(device);
+                if (tag)
+                        tags = strappenda(":", tag);
+
+                while ((tag = sd_device_get_tag_next(device)))
+                        tags = strappenda(tags, ":", tag);
+
+                tags = strappenda(tags, ":");
+
+                r = device_add_property(device, "TAGS", tags);
+                if (r < 0)
+                        return r;
+
+                device->tags_uptodate = true;
+        }
+
+        return 0;
+}
+
 _public_ int sd_device_get_property_value(sd_device *device, const char *key, const char **_value) {
         char *value;
         int r;
@@ -1305,11 +1357,7 @@ _public_ int sd_device_get_property_value(sd_device *device, const char *key, co
         assert_return(key, -EINVAL);
         assert_return(_value, -EINVAL);
 
-        r = device_read_uevent_file(device);
-        if (r < 0)
-                return r;
-
-        r = device_read_db(device);
+        r = device_properties_prepare(device);
         if (r < 0)
                 return r;
 
@@ -1325,8 +1373,13 @@ _public_ int sd_device_get_property_value(sd_device *device, const char *key, co
 _public_ const char *sd_device_get_property_first(sd_device *device, const char **_value) {
         const char *key;
         const char *value;
+        int r;
 
         assert_return(device, NULL);
+
+        r = device_properties_prepare(device);
+        if (r < 0)
+                return NULL;
 
         device->properties_modified = false;
         device->properties_iterator = ITERATOR_FIRST;
@@ -1342,8 +1395,13 @@ _public_ const char *sd_device_get_property_first(sd_device *device, const char 
 _public_ const char *sd_device_get_property_next(sd_device *device, const char **_value) {
         const char *key;
         const char *value;
+        int r;
 
         assert_return(device, NULL);
+
+        r = device_properties_prepare(device);
+        if (r < 0)
+                return NULL;
 
         if (device->properties_modified)
                 return NULL;
