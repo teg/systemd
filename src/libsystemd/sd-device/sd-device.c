@@ -1018,6 +1018,18 @@ _public_ int sd_device_get_driver(sd_device *device, const char **ret) {
         return 0;
 }
 
+_public_ int sd_device_get_devpath(sd_device *device, const char **devpath) {
+        assert_return(device, -EINVAL);
+        assert_return(devpath, -EINVAL);
+
+        assert(device->devpath);
+        assert(device->devpath[0] == '/');
+
+        *devpath = device->devpath;
+
+        return 0;
+}
+
 static int device_get_id_filename(sd_device *device, const char **ret) {
         assert(device);
         assert(ret);

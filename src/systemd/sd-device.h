@@ -47,6 +47,7 @@ int sd_device_get_devtype(sd_device *device, const char **ret);
 int sd_device_get_parent_with_subsystem_devtype(sd_device *child, const char *subsystem, const char *devtype, sd_device **ret);
 int sd_device_get_devnum(sd_device *device, dev_t *devnum);
 int sd_device_get_driver(sd_device *device, const char **ret);
+int sd_device_get_devpath(sd_device *device, const char **ret);
 
 int sd_device_get_is_initialized(sd_device *device, int *initialized);
 int sd_device_get_usec_since_initialized(sd_device *device, uint64_t *usec);
