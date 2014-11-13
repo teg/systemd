@@ -1030,6 +1030,26 @@ _public_ int sd_device_get_devpath(sd_device *device, const char **devpath) {
         return 0;
 }
 
+_public_ int sd_device_get_devnode(sd_device *device, const char **devnode) {
+        int r;
+
+        assert_return(device, -EINVAL);
+        assert_return(devnode, -EINVAL);
+
+        r = device_read_uevent_file(device);
+        if (r < 0)
+                return r;
+
+        if (!device->devnode)
+                return -ENOENT;
+
+        assert(path_startswith(device->devnode, "/dev/"));
+
+        *devnode = device->devnode;
+
+        return 0;
+}
+
 static int device_get_id_filename(sd_device *device, const char **ret) {
         assert(device);
         assert(ret);
