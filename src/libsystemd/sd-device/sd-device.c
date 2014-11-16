@@ -372,6 +372,24 @@ _public_ int sd_device_get_syspath(sd_device *device, const char **ret) {
         return 0;
 }
 
+_public_ int sd_device_get_sysname(sd_device *device, const char **ret) {
+        assert_return(device, -EINVAL);
+        assert_return(ret, -EINVAL);
+
+        *ret = device->sysname;
+
+        return 0;
+}
+
+_public_ int sd_device_get_sysnum(sd_device *device, const char **ret) {
+        assert_return(device, -EINVAL);
+        assert_return(ret, -EINVAL);
+
+        *ret = device->sysnum;
+
+        return 0;
+}
+
 static int device_set_ifindex(sd_device *device, const char *ifindex_str) {
         int ifindex, r;
 
