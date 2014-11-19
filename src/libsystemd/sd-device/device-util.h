@@ -23,6 +23,9 @@
 
 #include "util.h"
 
+#include "sd-device.h"
+#include "device-monitor.h"
+
 DEFINE_TRIVIAL_CLEANUP_FUNC(sd_device*, sd_device_unref);
 
 #define _cleanup_device_unref_ _cleanup_(sd_device_unrefp)
@@ -46,3 +49,6 @@ DEFINE_TRIVIAL_CLEANUP_FUNC(sd_device*, sd_device_unref);
         for (devlink = sd_device_get_devlink_first(device); \
              devlink;                                   \
              devlink = sd_device_get_devlink_next(device))
+
+DeviceAction device_action_from_string(const char *s) _pure_;
+const char *device_action_to_string(DeviceAction a) _const_;

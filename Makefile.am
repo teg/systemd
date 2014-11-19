@@ -2850,7 +2850,9 @@ libsystemd_internal_la_SOURCES = \
 	src/libsystemd/sd-hwdb/hwdb-util.h \
 	src/libsystemd/sd-hwdb/hwdb-intenal.h \
 	src/libsystemd/sd-device/sd-device.c \
-	src/libsystemd/sd-device/device-util.h
+	src/libsystemd/sd-device/device-util.h \
+	src/libsystemd/sd-device/device-monitor.c \
+	src/libsystemd/sd-device/device-monitor.h
 
 nodist_libsystemd_internal_la_SOURCES = \
 	src/libsystemd/libsystemd.sym
