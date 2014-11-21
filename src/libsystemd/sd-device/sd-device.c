@@ -87,6 +87,7 @@ struct sd_device {
         bool parent_set;
         bool subsystem_set;
         bool driver_set;
+        bool sysname_set;
 
         bool tags_uptodate;
         bool devlinks_uptodate;
@@ -294,10 +295,8 @@ static int device_add_devlink(sd_device *device, const char *devlink) {
 }
 
 static int device_set_syspath(sd_device *device, const char *_syspath, bool verify) {
-        _cleanup_free_ char *syspath = NULL, *sysname = NULL;
-        const char *devpath, *sysnum;
-        const char *pos;
-        size_t len = 0;
+        _cleanup_free_ char *syspath = NULL;
+        const char *devpath;
         int r;
 
         assert(device);
@@ -349,34 +348,6 @@ static int device_set_syspath(sd_device *device, const char *_syspath, bool veri
 
         devpath = syspath + strlen("/sys");
 
-        pos = strrchr(syspath, '/');
-        if (!pos)
-                return -EINVAL;
-        pos ++;
-
-        /* devpath is not a root directory */
-        if (*pos == '\0' || pos <= devpath)
-                return -EINVAL;
-
-        sysname = strdup(pos);
-        if (!sysname)
-                return -ENOMEM;
-
-        /* some devices have '!' in their name, change that to '/' */
-        while (sysname[len] != '\0') {
-                if (sysname[len] == '!')
-                        sysname[len] = '/';
-
-                len ++;
-        }
-
-        /* trailing number */
-        while (len > 0 && isdigit(sysname[--len]))
-                sysnum = &sysname[len];
-
-        if (len == 0)
-                sysnum = NULL;
-
         r = device_add_property(device, "DEVPATH", devpath);
         if (r < 0)
                 return r;
@@ -385,12 +356,7 @@ static int device_set_syspath(sd_device *device, const char *_syspath, bool veri
         device->syspath = syspath;
         syspath = NULL;
 
-        free(device->sysname);
-        device->sysname = sysname;
-        sysname = NULL;
-
         device->devpath = devpath;
-        device->sysnum = sysnum;
 
         return 0;
 }
@@ -409,6 +375,49 @@ _public_ int sd_device_get_syspath(sd_device *device, const char **ret) {
 _public_ int sd_device_get_sysname(sd_device *device, const char **ret) {
         assert_return(device, -EINVAL);
         assert_return(ret, -EINVAL);
+
+        if (!device->sysname_set) {
+                _cleanup_free_ char *sysname = NULL;
+                const char *sysnum;
+                const char *pos;
+                size_t len = 0;
+
+                pos = strrchr(device->devpath, '/');
+                if (!pos)
+                        return -EINVAL;
+                pos ++;
+
+                /* devpath is not a root directory */
+                if (*pos == '\0' || pos <= device->devpath)
+                        return -EINVAL;
+
+                sysname = strdup(pos);
+                if (!sysname)
+                        return -ENOMEM;
+
+                /* some devices have '!' in their name, change that to '/' */
+                while (sysname[len] != '\0') {
+                        if (sysname[len] == '!')
+                                sysname[len] = '/';
+
+                        len ++;
+                }
+
+                /* trailing number */
+                while (len > 0 && isdigit(sysname[--len]))
+                        sysnum = &sysname[len];
+
+                if (len == 0)
+                        sysnum = NULL;
+
+                free(device->sysname);
+                device->sysname = sysname;
+                sysname = NULL;
+
+                device->sysnum = sysnum;
+
+                device->sysname_set = true;
+        }
 
         *ret = device->sysname;
 
