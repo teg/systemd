@@ -31,6 +31,9 @@
 _SD_BEGIN_DECLARATIONS;
 
 typedef struct sd_device sd_device;
+typedef struct sd_device_enumerator sd_device_enumerator;
+
+/* device */
 
 sd_device *sd_device_ref(sd_device *device);
 sd_device *sd_device_unref(sd_device *device);
@@ -48,7 +51,7 @@ int sd_device_get_parent_with_subsystem_devtype(sd_device *child, const char *su
 int sd_device_get_devnum(sd_device *device, dev_t *devnum);
 int sd_device_get_ifindex(sd_device *device, int *ifindex);
 int sd_device_get_driver(sd_device *device, const char **ret);
-int sd_device_get_devpath(sd_device *device, const char **ret);
+int sd_device_get_devpath(const sd_device *device, const char **ret);
 int sd_device_get_devnode(sd_device *device, const char **ret);
 int sd_device_get_sysname(sd_device *device, const char **ret);
 int sd_device_get_sysnum(sd_device *device, const char **ret);
@@ -69,6 +72,14 @@ const char *sd_device_get_sysattr_first(sd_device *device);
 const char *sd_device_get_sysattr_next(sd_device *device);
 const char *sd_device_get_devlink_first(sd_device *device);
 const char *sd_device_get_devlink_next(sd_device *device);
+
+/* devcie enumerator */
+
+int sd_device_enumerator_new(sd_device_enumerator **ret);
+sd_device_enumerator *sd_device_enumerator_ref(sd_device_enumerator *enumerator);
+sd_device_enumerator *sd_device_enumerator_unref(sd_device_enumerator *enumerator);
+sd_device *sd_device_enumerator_get_device_first(sd_device_enumerator *enumerator);
+sd_device *sd_device_enumerator_get_device_next(sd_device_enumerator *enumerator);
 
 _SD_END_DECLARATIONS;
 
