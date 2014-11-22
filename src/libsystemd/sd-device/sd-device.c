@@ -35,6 +35,7 @@
 #include "sd-device.h"
 
 #include "device-util.h"
+#include "device-internal.h"
 
 struct sd_device {
         RefCount n_ref;
@@ -77,6 +78,10 @@ struct sd_device {
         bool is_initialized;
         uint64_t usec_initialized;
 
+        mode_t devmode;
+        uid_t devuid;
+        gid_t devgid;
+
         bool uevent_loaded;
         bool db_loaded;
         bool parent_set;
@@ -85,6 +90,8 @@ struct sd_device {
 
         bool tags_uptodate;
         bool devlinks_uptodate;
+
+        bool sealed;
 };
 
 static int device_new(sd_device **ret) {
@@ -286,7 +293,7 @@ static int device_add_devlink(sd_device *device, const char *devlink) {
         return 0;
 }
 
-static int device_set_syspath(sd_device *device, const char *_syspath) {
+static int device_set_syspath(sd_device *device, const char *_syspath, bool verify) {
         _cleanup_free_ char *syspath = NULL, *sysname = NULL;
         const char *devpath, *sysnum;
         const char *pos;
@@ -297,27 +304,50 @@ static int device_set_syspath(sd_device *device, const char *_syspath) {
         assert(_syspath);
 
         /* must be a subdirectory of /sys */
-        if (!path_startswith(_syspath, "/sys/"))
+        if (!path_startswith(_syspath, "/sys/")) {
+                log_debug("sd-device: syspath '%s' is not a subdirectory of /sys", _syspath);
                 return -EINVAL;
+        }
 
-        r = readlink_and_canonicalize(_syspath, &syspath);
-        if (r < 0)
-                return r;
+        if (verify) {
+                r = readlink_and_canonicalize(_syspath, &syspath);
+                if (r == -EINVAL) {
+                        /* not a symlink */
+                        syspath = canonicalize_file_name(_syspath);
+                        if (!syspath) {
+                                log_debug("sd-device: could not canonicalize '%s': %m", _syspath);
+                                return -errno;
+                        }
+                /* ignore errors due to the link not being a symlink */
+                } else if (r < 0 && r != -EINVAL) {
+                        log_debug("sd-device: could not get target of '%s': %s", _syspath, strerror(-r));
+                        return r;
+                }
+
+                if (path_startswith(syspath,  "/sys/devices/")) {
+                        char *path;
+
+                        /* all 'devices' require an 'uevent' file */
+                        path = strappenda(syspath, "/uevent");
+                        r = access(path, F_OK);
+                        if (r < 0) {
+                                log_debug("sd-device: %s does not have an uevent file", syspath);
+                                return -errno;
+                        }
+                } else {
+                        /* everything else just just needs to be a directory */
+                        if (!is_dir(syspath, false)) {
+                                log_debug("sd-device: %s is not a directory", syspath);
+                                return -EINVAL;
+                        }
+                }
+        } else {
+                syspath = strdup(_syspath);
+                if (!syspath)
+                        return -ENOMEM;
+        }
 
         devpath = syspath + strlen("/sys");
-
-        if (path_startswith(devpath,  "/devices/")) {
-                char *path;
-
-                /* all 'devices' require an 'uevent' file */
-                path = strappenda(syspath, "/uevent");
-                r = access(path, F_OK);
-                if (r < 0)
-                        return -errno;
-        } else
-                /* everything else just just needs to be a directory */
-                if (!is_dir(syspath, false))
-                        return -EINVAL;
 
         pos = strrchr(syspath, '/');
         if (!pos)
@@ -550,7 +580,7 @@ static int device_read_uevent_file(sd_device *device) {
 
         assert(device);
 
-        if (device->uevent_loaded)
+        if (device->uevent_loaded || device->sealed)
                 return 0;
 
         r = sd_device_get_syspath(device, &syspath);
@@ -633,7 +663,7 @@ _public_ int sd_device_new_from_syspath(sd_device **ret, const char *syspath) {
         if (r < 0)
                 return r;
 
-        r = device_set_syspath(device, syspath);
+        r = device_set_syspath(device, syspath, true);
         if (r < 0)
                 return r;
 
@@ -1242,7 +1272,7 @@ static int device_read_db(sd_device *device) {
                 INVALID_LINE,
         } state = PRE_KEY;
 
-        if (device->db_loaded)
+        if (device->db_loaded || device->sealed)
                 return 0;
 
         r = device_get_id_filename(device, &id);
@@ -1749,6 +1779,225 @@ _public_ const char *sd_device_get_sysattr_next(sd_device *device) {
                 return NULL;
 
         return set_iterate(device->sysattrs, &device->sysattrs_iterator);
+}
+
+static int device_set_devmode(sd_device *device, const char *mode) {
+        unsigned m;
+        int r;
+
+        assert(device);
+        assert(mode);
+
+        r = safe_atou(mode, &m);
+        if (r < 0)
+                return r;
+
+        r = device_add_property(device, "DEVMODE", mode);
+        if (r < 0)
+                return r;
+
+        device->devmode = m;
+
+        return 0;
+}
+
+static int device_set_devuid(sd_device *device, const char *uid) {
+        unsigned u;
+        int r;
+
+        assert(device);
+        assert(uid);
+
+        r = safe_atou(uid, &u);
+        if (r < 0)
+                return r;
+
+        r = device_add_property(device, "DEVUID", uid);
+        if (r < 0)
+                return r;
+
+        device->devuid = u;
+
+        return 0;
+}
+
+static int device_set_devgid(sd_device *device, const char *gid) {
+        unsigned g;
+        int r;
+
+        assert(device);
+        assert(gid);
+
+        r = safe_atou(gid, &g);
+        if (r < 0)
+                return r;
+
+        r = device_add_property(device, "DEVGID", gid);
+        if (r < 0)
+                return r;
+
+        device->devgid = g;
+
+        return 0;
+}
+
+static int device_ammend(sd_device *device, const char *key, const char *value) {
+        int r;
+
+        assert(device);
+        assert(key);
+        assert(value);
+
+        if (streq(key, "DEVPATH")) {
+                char *path;
+
+                path = strappenda("/sys", value);
+
+                /* the caller must verify or trust this data (e.g., if it comes from the kernel */
+                r = device_set_syspath(device, path, false);
+                if (r < 0) {
+                        log_debug("sd-device: could not set syspath to '%s': %s", path, strerror(-r));
+                        return r;
+                }
+        } else if (streq(key, "SUBSYSTEM")) {
+                r = device_set_subsystem(device, value);
+                if (r < 0)
+                        return r;
+        } else if (streq(key, "DEVTYPE")) {
+                r = device_set_devtype(device, value);
+                if (r < 0)
+                        return r;
+        } else if (streq(key, "DEVNAME")) {
+                r = device_set_devnode(device, value);
+                if (r < 0)
+                        return r;
+        } else if (streq(key, "USEC_INITIALIZED")) {
+                r = device_set_usec_initialized(device, value);
+                if (r < 0)
+                        return r;
+        } else if (streq(key, "DRIVER")) {
+                r = device_set_driver(device, value);
+                if (r < 0)
+                        return r;
+        } else if (streq(key, "IFINDEX")) {
+                r = device_set_ifindex(device, value);
+                if (r < 0)
+                        return r;
+        } else if (streq(key, "DEVMODE")) {
+                r = device_set_devmode(device, value);
+                if (r < 0)
+                        return r;
+        } else if (streq(key, "DEVUID")) {
+                r = device_set_devuid(device, value);
+                if (r < 0)
+                        return r;
+        } else if (streq(key, "DEVGID")) {
+                r = device_set_devgid(device, value);
+                if (r < 0)
+                        return r;
+/*
+        } else if (streq(key, "DEVLINKS")) {
+
+        } else if (streq(key, "TAGS")) {
+*/
+        } else {
+                r = device_add_property(device, key, value);
+                if (r < 0)
+                        return r;
+        }
+
+        return 0;
+}
+
+int device_new_from_nulstr(sd_device **ret, uint64_t *_seqnum, DeviceAction *_action, const char **_devpath_old, uint8_t *nulstr, size_t len) {
+        _cleanup_device_unref_ sd_device *device = NULL;
+        const char *major = NULL, *minor = NULL, *devpath_old = NULL;
+        DeviceAction action = _DEVICE_ACTION_INVALID;
+        uint64_t seqnum;
+        unsigned i = 0;
+        int r;
+
+        assert(ret);
+        assert(_seqnum);
+        assert(_action);
+        assert(_devpath_old);
+        assert(nulstr);
+        assert(len);
+
+        r = device_new(&device);
+        if (r < 0)
+                return r;
+
+        while (i < len) {
+                const char *key, *end;
+                char *value;
+
+                key = (char*)&nulstr[i];
+                end = memchr(key, '\0', len - i);
+                if (!end) {
+                        log_debug("sd-device: failed to parse nulstr");
+                        return -EINVAL;
+                }
+                i += end - key + 1;
+
+                value = strchr(key, '=');
+                if (!value) {
+                        log_debug("sd-device: not a key-value pair: '%s'", key);
+                        return -EINVAL;
+                }
+
+                *value = '\0';
+
+                value++;
+
+                if (streq(key, "MAJOR"))
+                        major = value;
+                else if (streq(key, "MINOR"))
+                        minor = value;
+                else if (streq(key, "DEVPATH_OLD"))
+                        devpath_old = value;
+                else if (streq(key, "ACTION")) {
+                        action = device_action_from_string(value);
+                        if (action == _DEVICE_ACTION_INVALID) {
+                                log_debug("sd-device: received device with invalid action '%s'", value);
+                                return -EINVAL;
+                        }
+                } else if (streq(key, "SEQNUM")) {
+                        r = safe_atou64(value, &seqnum);
+                        if (r < 0)
+                                return r;
+                } else {
+                        r = device_ammend(device, key, value);
+                        if (r < 0) {
+                                log_debug("sd-device: could not append '%s=%s' to device: %s", key, value, strerror(-r));
+                                return r;
+                        }
+                }
+        }
+
+        if (!device->devpath || !device->subsystem || action == _DEVICE_ACTION_INVALID) {
+                log_debug("sd-device: device created from strv lacks devpath, subsystem or action");
+                return -EINVAL;
+        }
+
+        if (major) {
+                r = device_set_devnum(device, major, minor);
+                if (r < 0) {
+                        log_debug("sd-device: could not set devnum %s:%s: %s", major, minor, strerror(-r));
+                        return r;
+                }
+        }
+
+        *_action = action;
+        *_devpath_old = devpath_old;
+        *_seqnum = seqnum;
+
+        device->sealed = true;
+
+        *ret = device;
+        device = NULL;
+
+        return 0;
 }
 
 int device_get_devlink_priority(sd_device *device, int *priority) {

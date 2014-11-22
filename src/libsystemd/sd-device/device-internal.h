@@ -20,6 +20,9 @@
   You should have received a copy of the GNU Lesser General Public License
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
+#include "device-monitor.h"
+
+int device_new_from_nulstr(sd_device **ret, uint64_t *_seqnum, DeviceAction *_action, const char **_devpath_old, uint8_t *nulstr, size_t len);
 
 int device_get_devlink_priority(sd_device *device, int *priority);
 int device_get_watch_handle(sd_device *device, int *handle);
