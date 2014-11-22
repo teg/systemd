@@ -55,6 +55,9 @@ struct sd_device {
         Set *devlinks;
         Iterator devlinks_iterator;
         bool devlinks_modified;
+        int devlink_priority;
+
+        int watch_handle;
 
         char *syspath;
         const char *devpath;
@@ -96,6 +99,7 @@ static int device_new(sd_device **ret) {
         device->n_ref = REFCNT_INIT;
         device->tags_uptodate = true;
         device->devlinks_uptodate = true;
+        device->watch_handle = -1;
 
         *ret = device;
         device = NULL;
@@ -1184,6 +1188,12 @@ static int handle_db_line(sd_device *device, char key, const char *value) {
                         return r;
 
                 break;
+        case 'L':
+                r = safe_atoi(value, &device->devlink_priority);
+                if (r < 0)
+                        return r;
+
+                break;
         case 'E':
                 r = device_add_property_from_string(device, value);
                 if (r < 0)
@@ -1196,15 +1206,17 @@ static int handle_db_line(sd_device *device, char key, const char *value) {
                         return r;
 
                 break;
+        case 'W':
+                r = safe_atoi(value, &device->watch_handle);
+                if (r < 0)
+                        return r;
+
+                break;
         case 'I':
                 r = device_set_usec_initialized(device, value);
                 if (r < 0)
                         return r;
 
-                break;
-        case 'L':
-        case 'W':
-                /* TODO */
                 break;
         default:
                 log_debug("device db: unknown key '%c'", key);
@@ -1737,4 +1749,34 @@ _public_ const char *sd_device_get_sysattr_next(sd_device *device) {
                 return NULL;
 
         return set_iterate(device->sysattrs, &device->sysattrs_iterator);
+}
+
+int device_get_devlink_priority(sd_device *device, int *priority) {
+        int r;
+
+        assert(device);
+        assert(priority);
+
+        r = device_read_db(device);
+        if (r < 0)
+                return r;
+
+        *priority = device->devlink_priority;
+
+        return 0;
+}
+
+int device_get_watch_handle(sd_device *device, int *handle) {
+        int r;
+
+        assert(device);
+        assert(handle);
+
+        r = device_read_db(device);
+        if (r < 0)
+                return r;
+
+        *handle = device->watch_handle;
+
+        return 0;
 }
