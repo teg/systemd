@@ -28,6 +28,7 @@
 #include "path-util.h"
 #include "strxcpyx.h"
 #include "fileio.h"
+#include "hashmap.h"
 
 #include "sd-device.h"
 
@@ -37,6 +38,7 @@ struct sd_device {
         RefCount n_ref;
 
         sd_device *parent;
+        OrderedHashmap *properties;
 
         char *syspath;
         const char *devpath;
@@ -91,10 +93,50 @@ _public_ sd_device *sd_device_unref(sd_device *device) {
                 free(device->subsystem);
                 free(device->driver);
 
+                ordered_hashmap_free_free_free(device->properties);
+
                 free(device);
         }
 
         return NULL;
+}
+
+static int device_add_property(sd_device *device, const char *_key, const char *_value) {
+        assert(device);
+        assert(_key);
+
+        if (_value) {
+                _cleanup_free_ char *key = NULL, *value = NULL, *old_key = NULL, *old_value = NULL;
+                int r;
+
+                r = ordered_hashmap_ensure_allocated(&device->properties, &string_hash_ops);
+                if (r < 0)
+                        return r;
+
+                key = strdup(_key);
+                if (!key)
+                        return -ENOMEM;
+
+                value = strdup(_value);
+                if (!value)
+                        return -ENOMEM;
+
+                old_value = ordered_hashmap_get2(device->properties, key, (void**) &old_key);
+
+                r = ordered_hashmap_replace(device->properties, key, value);
+                if (r < 0)
+                        return r;
+
+                key = NULL;
+                value = NULL;
+        } else {
+                _cleanup_free_ char *key = NULL;
+                _cleanup_free_ char *value = NULL;
+
+                value = ordered_hashmap_remove2(device->properties, _key, (void**) &key);
+        }
+
+        return 0;
 }
 
 static int device_set_syspath(sd_device *device, const char *_syspath) {
@@ -158,6 +200,10 @@ static int device_set_syspath(sd_device *device, const char *_syspath) {
         if (len == 0)
                 sysnum = NULL;
 
+        r = device_add_property(device, "DEVPATH", devpath);
+        if (r < 0)
+                return r;
+
         free(device->syspath);
         device->syspath = syspath;
         syspath = NULL;
@@ -196,6 +242,10 @@ static int device_set_ifindex(sd_device *device, const char *ifindex_str) {
         if (ifindex <= 0)
                 return -EINVAL;
 
+        r = device_add_property(device, "IFINDEX", ifindex_str);
+        if (r < 0)
+                return r;
+
         device->ifindex = ifindex;
 
         return 0;
@@ -218,6 +268,10 @@ static int device_set_devnode(sd_device *device, const char *_devnode) {
                         return -ENOMEM;
         }
 
+        r = device_add_property(device, "DEVNAME", devnode);
+        if (r < 0)
+                return r;
+
         free(device->devnode);
         device->devnode = devnode;
         devnode = NULL;
@@ -235,6 +289,10 @@ static int device_set_devtype(sd_device *device, const char *_devtype) {
         devtype = strdup(_devtype);
         if (!devtype)
                 return -ENOMEM;
+
+        r = device_add_property(device, "DEVTYPE", devtype);
+        if (r < 0)
+                return r;
 
         free(device->devtype);
         device->devtype = devtype;
@@ -258,6 +316,16 @@ static int device_set_devnum(sd_device *device, const char *major, const char *m
 
         if (minor) {
                 r = safe_atou(minor, &min);
+                if (r < 0)
+                        return r;
+        }
+
+        r = device_add_property(device, "MAJOR", major);
+        if (r < 0)
+                return r;
+
+        if (minor) {
+                r = device_add_property(device, "MINOR", minor);
                 if (r < 0)
                         return r;
         }
