@@ -3789,6 +3789,57 @@ hwdb-remove-hook:
 endif
 
 # ------------------------------------------------------------------------------
+if ENABLE_DEVICED
+rootbin_PROGRAMS += \
+	devicectl
+
+rootlibexec_PROGRAMS += \
+	systemd-deviced
+
+dist_systemunit_DATA += \
+	units/systemd-deviced.socket
+
+nodist_systemunit_DATA += \
+	units/systemd-deviced.service
+
+EXTRA_DIST += \
+	units/systemd-deviced.service.in
+
+CLEANFILES += \
+	units/systemd-deviced.service
+
+dist_systemunit_DATA_busnames += \
+	units/org.freedesktop.device1.busname
+
+BUSNAMES_TARGET_WANTS += \
+	org.freedesktop.device1.busname
+
+SOCKETS_TARGET_WANTS += \
+	systemd-deviced.socket
+
+SYSINIT_TARGET_WANTS += \
+	systemd-deviced.service
+endif
+
+devicectl_SOURCES = \
+	src/device/devicectl.c
+
+devicectl_LDADD = \
+	libsystemd-internal.la \
+	libsystemd-shared.la
+
+systemd_deviced_SOURCES = \
+	src/device/deviced.c \
+	src/device/deviced-manager.h \
+	src/device/deviced-manager.c \
+	src/device/deviced-manager-bus.c
+
+systemd_deviced_LDADD = \
+	libsystemd-label.la \
+	libsystemd-internal.la \
+	libsystemd-shared.la
+
+# ------------------------------------------------------------------------------
 TESTS += \
 	test/udev-test.pl \
 	$(NULL)

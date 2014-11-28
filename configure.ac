@@ -1133,6 +1133,15 @@ AS_IF([test "x$enable_networkd" != "xno"], [
 AM_CONDITIONAL(ENABLE_NETWORKD, [test "x$have_networkd" = "xyes"])
 
 # ------------------------------------------------------------------------------
+have_deviced=no
+AC_ARG_ENABLE(deviced, AS_HELP_STRING([--enable-deviced], [enable deviced]))
+AS_IF([test "x$enable_deviced" == "xyes"], [
+        AC_DEFINE(ENABLE_DEVICED, 1, [Define if deviced support is to be enabled])
+        have_deviced=yes
+])
+AM_CONDITIONAL(ENABLE_DEVICED, [test "x$have_deviced" = "xyes"])
+
+# ------------------------------------------------------------------------------
 have_efi=no
 AC_ARG_ENABLE(efi, AS_HELP_STRING([--disable-efi], [disable EFI support]))
 if test "x$enable_efi" != "xno"; then
@@ -1481,6 +1490,7 @@ AC_MSG_RESULT([
         networkd:                ${have_networkd}
         resolved:                ${have_resolved}
         default DNS servers:     ${DNS_SERVERS}
+        deviced:                 ${have_deviced}
         coredump:                ${have_coredump}
         polkit:                  ${have_polkit}
         efi:                     ${have_efi}
