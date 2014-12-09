@@ -38,7 +38,17 @@ typedef enum DeviceAction {
         _DEVICE_ACTION_INVALID = -1,
 } DeviceAction;
 
-typedef void (*device_monitor_cb_t)(DeviceMonitor *monitor, sd_device *device, uint64_t seqnum, DeviceAction action, const char *devpath_old, void *userdata);
+typedef struct DeviceMonitorEvent {
+        sd_device *device;
+
+        DeviceAction action;
+        uint64_t seqnum;
+        const char *devpath_old;
+
+        usec_t timestamp;
+} DeviceMonitorEvent;
+
+typedef void (*device_monitor_cb_t)(DeviceMonitor *monitor, DeviceMonitorEvent *event, void *userdata);
 
 DeviceMonitor *device_monitor_ref(DeviceMonitor *monitor);
 DeviceMonitor *device_monitor_unref(DeviceMonitor *monitor);

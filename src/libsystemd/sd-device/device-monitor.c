@@ -114,8 +114,9 @@ static int monitor_new(DeviceMonitor **ret) {
         return 0;
 }
 
-int device_monitor_new_from_netlink(DeviceMonitor **ret, int fd, sd_event *event, int priority) {
+int device_monitor_new_from_netlink(DeviceMonitor **ret, int fd, sd_event *_event, int priority) {
         _cleanup_device_monitor_unref_ DeviceMonitor *monitor = NULL;
+        _cleanup_event_unref_ sd_event *event = NULL;
         int r;
 
         assert_return(ret, -EINVAL);
@@ -123,6 +124,14 @@ int device_monitor_new_from_netlink(DeviceMonitor **ret, int fd, sd_event *event
         r = monitor_new(&monitor);
         if (r < 0)
                 return r;
+
+        if (_event)
+                event = sd_event_ref(_event);
+        else {
+                r = sd_event_default(&event);
+                if (r < 0)
+                        return r;
+        }
 
         if (fd < 0) {
                 fd = socket(PF_NETLINK, SOCK_RAW|SOCK_CLOEXEC|SOCK_NONBLOCK, NETLINK_KOBJECT_UEVENT);
@@ -136,15 +145,9 @@ int device_monitor_new_from_netlink(DeviceMonitor **ret, int fd, sd_event *event
         monitor->snl.nl.nl_family = AF_NETLINK;
         monitor->snl.nl.nl_groups = UDEV_MONITOR_KERNEL;
 
-        if (event)
-                monitor->event = sd_event_ref(event);
-        else {
-                r = sd_event_default(&monitor->event);
-                if (r < 0)
-                        return r;
-        }
-
         monitor->priority = priority;
+        monitor->event = event;
+        event = NULL;
 
         *ret = monitor;
         monitor = NULL;
@@ -165,13 +168,15 @@ int device_monitor_set_receive_buffer_size(DeviceMonitor *monitor, int size) {
         return 0;
 }
 
-static int monitor_receive_device(DeviceMonitor *monitor, sd_device **ret, uint64_t *seqnum, DeviceAction *action, const char **devpath_old) {
+static int monitor_receive_device(DeviceMonitor *monitor, sd_device **ret,
+                                  usec_t *_timestamp, uint64_t *seqnum, DeviceAction *action, const char **devpath_old) {
         _cleanup_strv_free_ char **properties = NULL;
         struct iovec iov = {
                 .iov_base = monitor->buf,
                 .iov_len = sizeof(monitor->buf),
         };
-        char cred_msg[CMSG_SPACE(sizeof(struct ucred))];
+        char cred_msg[CMSG_SPACE(sizeof(struct ucred)) +
+                      CMSG_SPACE(sizeof(struct timeval))];
         union sockaddr_union snl;
         struct msghdr smsg = {
                 .msg_iov = &iov,
@@ -182,7 +187,8 @@ static int monitor_receive_device(DeviceMonitor *monitor, sd_device **ret, uint6
                 .msg_namelen = sizeof(snl),
         };
         struct cmsghdr *cmsg;
-        struct ucred *cred;
+        struct ucred *ucred;
+        usec_t timestamp = 0;
         ssize_t buflen;
         size_t bufpos;
         int r;
@@ -218,15 +224,37 @@ static int monitor_receive_device(DeviceMonitor *monitor, sd_device **ret, uint6
                 }
         }
 
-        cmsg = CMSG_FIRSTHDR(&smsg);
-        if (cmsg == NULL || cmsg->cmsg_type != SCM_CREDENTIALS) {
+        for (cmsg = CMSG_FIRSTHDR(&smsg); cmsg; cmsg = CMSG_NXTHDR(&smsg, cmsg)) {
+                if (cmsg->cmsg_level != SOL_SOCKET) {
+                        log_warning("device-monitor: got unexpected sockopt level");
+                        continue;
+                }
+
+                if (cmsg->cmsg_type == SCM_CREDENTIALS) {
+                        if (cmsg->cmsg_len != CMSG_LEN(sizeof(struct ucred))) {
+                                log_warning("device-monitor: wrong ucred size");
+                                continue;
+                        }
+
+                        ucred = (struct ucred*) CMSG_DATA(cmsg);
+                } else if (cmsg->cmsg_type == SO_TIMESTAMP) {
+                        if (cmsg->cmsg_len != CMSG_LEN(sizeof(struct timeval))) {
+                                log_warning("device-monitor: wrong timeval size");
+                                continue;
+                        }
+
+                        timestamp = timeval_load((struct timeval*)CMSG_DATA(cmsg));
+                } else
+                        log_warning("device-monitor: got unexpected sockopt");
+        }
+
+        if (!ucred) {
                 log_debug("device-monitor: no sender credentials received, message ignored\n");
                 return 0;
         }
 
-        cred = (struct ucred *)CMSG_DATA(cmsg);
-        if (cred->uid != 0) {
-                log_debug("device-monitor: sender uid=%d, message ignored\n", cred->uid);
+        if (ucred->uid != 0) {
+                log_debug("device-monitor: sender uid=%d, message ignored\n", ucred->uid);
                 return 0;
         }
 
@@ -247,27 +275,28 @@ static int monitor_receive_device(DeviceMonitor *monitor, sd_device **ret, uint6
         if (r < 0)
                 return r;
 
+        *_timestamp = timestamp;
+
         return 1;
 }
 
 static int device_handler(sd_event_source *s, int fd, uint32_t revents, void *userdata) {
+        DeviceMonitorEvent event = {};
         DeviceMonitor *monitor = userdata;
-        _cleanup_device_unref_ sd_device *device = NULL;
-        uint64_t seqnum;
-        DeviceAction action;
-        const char *devpath_old = NULL;
         int r;
 
         assert(monitor);
 
-        r = monitor_receive_device(monitor, &device, &seqnum, &action, &devpath_old);
+        r = monitor_receive_device(monitor, &event.device, &event.timestamp, &event.seqnum, &event.action, &event.devpath_old);
         if (r < 0) {
                 return 1;
         } else if (r == 0)
                 return 1;
 
         if (monitor->callback)
-                monitor->callback(monitor, device, seqnum, action, devpath_old, monitor->userdata);
+                monitor->callback(monitor, &event, monitor->userdata);
+
+        sd_device_unref(event.device);
 
         return 1;
 }
@@ -306,6 +335,13 @@ int device_monitor_start(DeviceMonitor *monitor) {
         r = setsockopt(monitor->fd, SOL_SOCKET, SO_PASSCRED, &on, sizeof(on));
         if (r < 0)
                 return -errno;
+
+        /* use kernel timestamping for improved debugging */
+        r = setsockopt(monitor->fd, SOL_SOCKET, SO_TIMESTAMP, &on, sizeof(on));
+        if (r < 0) {
+                log_warning("could not set TIMESTAMP: %m");
+                return -errno;
+        }
 
         r = sd_event_add_io(monitor->event, &source, monitor->fd, EPOLLIN, device_handler, monitor);
         if (r < 0)
