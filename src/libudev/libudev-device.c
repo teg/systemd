@@ -2,6 +2,7 @@
   This file is part of systemd.
 
   Copyright 2008-2012 Kay Sievers <kay@vrfy.org>
+  Copyright 2015 Tom Gundersen <teg@jklm.no>
 
   systemd is free software; you can redistribute it and/or modify it
   under the terms of the GNU Lesser General Public License as published by
@@ -33,6 +34,8 @@
 #include <sys/socket.h>
 #include <linux/sockios.h>
 
+#include "sd-device.h"
+
 #include "libudev.h"
 #include "libudev-private.h"
 
@@ -55,6 +58,11 @@ static int udev_device_set_devnode(struct udev_device *udev_device, const char *
  */
 struct udev_device {
         struct udev *udev;
+
+        /* real device object */
+        sd_device *device;
+
+        /* legacy */
         struct udev_device *parent_device;
         char *syspath;
         const char *devpath;
@@ -684,6 +692,7 @@ _public_ struct udev_device *udev_device_new_from_syspath(struct udev *udev, con
         char *pos;
         struct stat statbuf;
         struct udev_device *udev_device;
+        int r;
 
         if (udev == NULL) {
                 errno = EINVAL;
@@ -735,6 +744,13 @@ _public_ struct udev_device *udev_device_new_from_syspath(struct udev *udev, con
         udev_device = udev_device_new(udev);
         if (udev_device == NULL)
                 return NULL;
+
+        r = sd_device_new_from_syspath(&udev_device->device, path);
+        if (r < 0) {
+                errno = -r;
+                udev_device_unref(udev_device);
+                return NULL;
+        }
 
         udev_device_set_syspath(udev_device, path);
         log_debug("device %p has devpath '%s'", udev_device, udev_device_get_devpath(udev_device));
@@ -963,6 +979,15 @@ _public_ struct udev_device *udev_device_new_from_environment(struct udev *udev)
         udev_device = udev_device_new(udev);
         if (udev_device == NULL)
                 return NULL;
+/* TODO
+        r = sd_device_new_from_strv();
+        if (r < 0) {
+                errno = -r;
+                udev_device_unref(udev_device);
+                return NULL;
+        }
+*/
+
         udev_device_set_info_loaded(udev_device);
 
         for (i = 0; environ[i] != NULL; i++)
@@ -1131,6 +1156,7 @@ _public_ struct udev_device *udev_device_unref(struct udev_device *udev_device)
         udev_device->refcount--;
         if (udev_device->refcount > 0)
                 return NULL;
+        sd_device_unref(udev_device->device);
         if (udev_device->parent_device != NULL)
                 udev_device_unref(udev_device->parent_device);
         free(udev_device->syspath);
