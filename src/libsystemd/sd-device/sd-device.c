@@ -756,11 +756,11 @@ _public_ int sd_device_new_from_subsystem_sysname(sd_device **ret, const char *s
         return -ENOENT;
 }
 
-static int device_get_ifindex(sd_device *device, int *ifindex) {
+int sd_device_get_ifindex(sd_device *device, int *ifindex) {
         int r;
 
-        assert(device);
-        assert(ifindex);
+        assert_return(device, -EINVAL);
+        assert_return(ifindex, -EINVAL);
 
         r = device_read_uevent_file(device);
         if (r < 0)
@@ -815,7 +815,7 @@ _public_ int sd_device_new_from_device_id(sd_device **ret, const char *id) {
                 if (r < 0)
                         return r;
 
-                r = device_get_ifindex(device, &ifindex);
+                r = sd_device_get_ifindex(device, &ifindex);
                 if (r < 0)
                         return r;
 
@@ -1129,7 +1129,7 @@ static int device_get_id_filename(sd_device *device, const char **ret) {
                 if (r < 0)
                         return r;
 
-                r = device_get_ifindex(device, &ifindex);
+                r = sd_device_get_ifindex(device, &ifindex);
                 if (r < 0)
                         return r;
 
