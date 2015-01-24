@@ -846,8 +846,6 @@ void udev_event_execute_rules(struct udev_event *event,
                 /* rename a new network interface, if needed */
                 if (udev_device_get_ifindex(dev) > 0 && streq(udev_device_get_action(dev), "add") &&
                     event->name != NULL && !streq(event->name, udev_device_get_sysname(dev))) {
-                        char syspath[UTIL_PATH_SIZE];
-                        char *pos;
                         int r;
 
                         r = rename_netif(event);
@@ -856,15 +854,9 @@ void udev_event_execute_rules(struct udev_event *event,
                                 udev_device_add_property(dev, "INTERFACE_OLD", udev_device_get_sysname(dev));
 
                                 /* now change the devpath, because the kernel device name has changed */
-                                strscpy(syspath, sizeof(syspath), udev_device_get_syspath(dev));
-                                pos = strrchr(syspath, '/');
-                                if (pos != NULL) {
-                                        pos++;
-                                        strscpy(pos, sizeof(syspath) - (pos - syspath), event->name);
-                                        udev_device_set_syspath(event->dev, syspath);
-                                        udev_device_add_property(dev, "INTERFACE", udev_device_get_sysname(dev));
-                                        log_debug("changed devpath to '%s'", udev_device_get_devpath(dev));
-                                }
+                                udev_device_rename(dev, event->name);
+                                udev_device_add_property(dev, "INTERFACE", udev_device_get_sysname(dev));
+                                log_debug("changed devpath to '%s'", udev_device_get_devpath(dev));
                         }
                 }
 
