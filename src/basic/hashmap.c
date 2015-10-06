@@ -77,12 +77,9 @@
  * Khuong, P. 2013. The Other Robin Hood Hashing.
  * http://www.pvk.ca/Blog/2013/11/26/the-other-robin-hood-hashing/
  * - Short summary of random vs. linear probing, and tombstones vs. backward shift.
- */
-
-/*
- * XXX Ideas for improvement:
- * For unordered hashmaps, randomize iteration order, similarly to Perl:
+ *
  * http://blog.booking.com/hardening-perls-hash-function.html
+ * - randomized iteration order for unordered hashmaps.
  */
 
 /* INV_KEEP_FREE = 1 / (1 - max_load_factor)
@@ -180,7 +177,7 @@ struct _packed_ indirect_storage {
         unsigned n_entries;                /* number of stored entries */
         unsigned n_buckets;                /* number of buckets */
 
-        unsigned idx_lowest_entry;         /* Index below which all buckets are free.
+        unsigned iteration_first_entry;    /* Iteration before which all buckets are free.
                                               Makes "while(hashmap_steal_first())" loops
                                               O(n) instead of O(n^2) for unordered hashmaps. */
         uint8_t  _pad[3];                  /* padding for the whole HashmapBase */
@@ -219,12 +216,16 @@ struct HashmapBase {
                 struct direct_storage direct;     /* if !has_indirect */
         };
 
-        enum HashmapType type:2;     /* HASHMAP_TYPE_* */
-        bool has_indirect:1;         /* whether indirect storage is used */
-        unsigned n_direct_entries:3; /* Number of entries in direct storage.
-                                      * Only valid if !has_indirect. */
-        bool from_pool:1;            /* whether was allocated from mempool */
-        HASHMAP_DEBUG_FIELDS         /* optional hashmap_debug_info */
+        enum HashmapType type:2;        /* HASHMAP_TYPE_* */
+        bool has_indirect:1;            /* whether indirect storage is used */
+        unsigned n_direct_entries:3;    /* Number of entries in direct storage.
+                                         * Only valid if !has_indirect. */
+        bool from_pool:1;               /* whether was allocated from mempool */
+        char random_data_state[128];    /* Random data to generate pseudo random
+                                           enumerations */
+        struct random_data random_data; /* As above */
+        unsigned iteration_mask;        /* As above */
+        HASHMAP_DEBUG_FIELDS            /* optional hashmap_debug_info */
 };
 
 /* Specific hash types
@@ -339,6 +340,11 @@ const struct hash_ops devt_hash_ops = {
 static unsigned n_buckets(HashmapBase *h) {
         return h->has_indirect ? h->indirect.n_buckets
                                : hashmap_type_info[h->type].n_direct_buckets;
+}
+
+/* The number of buckets rounded up to the nearest power-of-two. */
+static unsigned n_buckets_ceil(HashmapBase *h) {
+        return 1U << log2u_round_up(n_buckets(h));
 }
 
 static unsigned n_entries(HashmapBase *h) {
@@ -472,6 +478,35 @@ static unsigned bucket_calculate_dib(HashmapBase *h, unsigned idx, dib_raw_t raw
 
 static void bucket_set_dib(HashmapBase *h, unsigned idx, unsigned dib) {
         dib_raw_ptr(h)[idx] = dib != DIB_FREE ? MIN(dib, DIB_RAW_OVERFLOW) : DIB_RAW_FREE;
+}
+
+/* This is an involution over the integers smaller than the smallest
+ * power-of-two larger or equal to the number of buckets. */
+static unsigned idx_from_iteration(HashmapBase *h, unsigned iteration) {
+        return h->iteration_mask ^ iteration;
+}
+
+/* these functions are identical, but let's give them different names for clarity*/
+#define idx_to_iteration idx_from_iteration
+
+static unsigned skip_free_buckets_random(HashmapBase *h, unsigned iteration) {
+        dib_raw_t *dibs;
+
+        dibs = dib_raw_ptr(h);
+
+        for ( ; iteration < n_buckets_ceil(h); iteration ++) {
+                unsigned idx;
+
+                idx = idx_from_iteration(h, iteration);
+
+                if (idx >= n_buckets(h))
+                        continue;
+
+                if (dibs[idx] != DIB_RAW_FREE)
+                        return idx;
+        }
+
+        return IDX_NIL;
 }
 
 static unsigned skip_free_buckets(HashmapBase *h, unsigned idx) {
@@ -655,7 +690,7 @@ at_end:
         return IDX_NIL;
 }
 
-static unsigned hashmap_iterate_in_internal_order(HashmapBase *h, Iterator *i) {
+static unsigned hashmap_iterate_in_random_order(HashmapBase *h, Iterator *i) {
         unsigned idx;
 
         assert(h);
@@ -667,17 +702,17 @@ static unsigned hashmap_iterate_in_internal_order(HashmapBase *h, Iterator *i) {
         if (i->idx == IDX_FIRST) {
                 /* fast forward to the first occupied bucket */
                 if (h->has_indirect) {
-                        i->idx = skip_free_buckets(h, h->indirect.idx_lowest_entry);
-                        h->indirect.idx_lowest_entry = i->idx;
+                        i->idx = skip_free_buckets_random(h, h->indirect.iteration_first_entry);
+                        h->indirect.iteration_first_entry = idx_to_iteration(h, i->idx);
                 } else
-                        i->idx = skip_free_buckets(h, 0);
+                        i->idx = skip_free_buckets_random(h, 0);
 
                 if (i->idx == IDX_NIL)
                         goto at_end;
         } else {
                 struct hashmap_base_entry *e;
 
-                assert(i->idx > 0);
+                assert(idx_to_iteration(h, i->idx) > 0);
 
                 e = bucket_at(h, i->idx);
                 /*
@@ -697,7 +732,7 @@ static unsigned hashmap_iterate_in_internal_order(HashmapBase *h, Iterator *i) {
         i->prev_idx = idx;
 #endif
 
-        i->idx = skip_free_buckets(h, i->idx + 1);
+        i->idx = skip_free_buckets_random(h, idx_to_iteration(h, i->idx) + 1);
         if (i->idx != IDX_NIL)
                 i->next_key = bucket_at(h, i->idx)->key;
         else
@@ -733,7 +768,7 @@ static unsigned hashmap_iterate_entry(HashmapBase *h, Iterator *i) {
 #endif
 
         return h->type == HASHMAP_TYPE_ORDERED ? hashmap_iterate_in_insertion_order((OrderedHashmap*) h, i)
-                                               : hashmap_iterate_in_internal_order(h, i);
+                                               : hashmap_iterate_in_random_order(h, i);
 }
 
 bool internal_hashmap_iterate(HashmapBase *h, Iterator *i, void **value, const void **key) {
@@ -780,10 +815,21 @@ static void reset_direct_storage(HashmapBase *h) {
         memset(p, DIB_RAW_INIT, sizeof(dib_raw_t) * hi->n_direct_buckets);
 }
 
+static int hashmap_initialize_random_state(HashmapBase *h, const uint8_t hash_key[HASH_KEY_SIZE]) {
+        int r;
+
+        r = initstate_r(*(unsigned*)hash_key, h->random_data_state, sizeof(h->random_data_state), &h->random_data);
+        if (r < 0)
+                return r;
+
+        return 0;
+}
+
 static struct HashmapBase *hashmap_base_new(const struct hash_ops *hash_ops, enum HashmapType type HASHMAP_DEBUG_PARAMS) {
         HashmapBase *h;
         const struct hashmap_type_info *hi = &hashmap_type_info[type];
         bool use_pool;
+        int r;
 
         use_pool = is_main_thread();
 
@@ -807,6 +853,10 @@ static struct HashmapBase *hashmap_base_new(const struct hash_ops *hash_ops, enu
                 random_bytes(shared_hash_key, sizeof(shared_hash_key));
                 shared_hash_key_initialized= true;
         }
+
+        r = hashmap_initialize_random_state(h, shared_hash_key);
+        if (r < 0)
+                return NULL;
 
 #ifdef ENABLE_DEBUG_HASHMAP
         h->debug.func = func;
@@ -986,11 +1036,22 @@ static bool hashmap_put_robin_hood(HashmapBase *h, unsigned idx,
         for (distance = 0; ; distance++) {
                 raw_dib = dibs[idx];
                 if (raw_dib == DIB_RAW_FREE || raw_dib == DIB_RAW_REHASH) {
+                        int32_t random;
+
                         if (raw_dib == DIB_RAW_REHASH)
                                 bucket_move_entry(h, swap, idx, IDX_TMP);
 
-                        if (h->has_indirect && h->indirect.idx_lowest_entry > idx)
-                                h->indirect.idx_lowest_entry = idx;
+                        /* Generate a new enumeration every time an entry is added.
+                           Ensure the mask has all zeroes in the higher order bits,
+                           so that xor'ing it with a number < n_buckets_ceil(h)
+                           will always result in a number < n_buckets_ceil(h). */
+                        assert_se(random_r(&h->random_data, &random) >= 0);
+                        h->iteration_mask = random & (n_buckets_ceil(h) - 1);
+
+                        /* With a new enumeration we have to recompute the first
+                           entry. */
+                        if (h->has_indirect)
+                                h->indirect.iteration_first_entry = 0;
 
                         bucket_set_dib(h, idx, distance);
                         bucket_move_entry(h, swap, IDX_PUT, idx);
@@ -1093,6 +1154,7 @@ static int resize_buckets(HashmapBase *h, unsigned entries_add) {
         unsigned old_n_buckets, new_n_buckets, n_rehashed, new_n_entries;
         uint8_t new_shift;
         bool rehash_next;
+        int r;
 
         assert(h);
 
@@ -1139,7 +1201,7 @@ static int resize_buckets(HashmapBase *h, unsigned entries_add) {
                 memcpy(new_storage, h->direct.storage,
                        old_n_buckets * (hi->entry_size + sizeof(dib_raw_t)));
                 h->indirect.n_entries = h->n_direct_entries;
-                h->indirect.idx_lowest_entry = 0;
+                h->indirect.iteration_first_entry = 0;
                 h->n_direct_entries = 0;
         }
 
@@ -1147,6 +1209,9 @@ static int resize_buckets(HashmapBase *h, unsigned entries_add) {
          * allow reusing a previously generated key. It's still a different key
          * from the shared one that we used for direct storage. */
         get_hash_key(h->indirect.hash_key, !h->has_indirect);
+        r = hashmap_initialize_random_state(h, h->indirect.hash_key);
+        if (r < 0)
+                return r;
 
         h->has_indirect = true;
         h->indirect.storage = new_storage;
