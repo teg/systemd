@@ -549,7 +549,8 @@ static int ndisc_router_solicitation_timeout(sd_event_source *s, uint64_t usec, 
                                       next_timeout, 0,
                                       ndisc_router_solicitation_timeout, nd);
                 if (r < 0) {
-                        ndisc_notify(nd, r);
+                        /* we cannot continue if we are unable to rearm the timer */
+                        sd_ndisc_stop(nd);
                         return 0;
                 }
 
@@ -574,6 +575,8 @@ int sd_ndisc_stop(sd_ndisc *nd) {
         ndisc_init(nd);
 
         nd->state = NDISC_STATE_IDLE;
+
+        ndisc_notify(nd, SD_NDISC_EVENT_STOP);
 
         return 0;
 }
