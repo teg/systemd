@@ -2099,6 +2099,10 @@ static int link_configure(Link *link) {
                 r = ndisc_configure(link);
                 if (r < 0)
                         return r;
+
+                r = dhcp6_configure(link);
+                if (r < 0)
+                        return r;
         }
 
         if (link_lldp_enabled(link)) {
