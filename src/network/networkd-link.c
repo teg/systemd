@@ -1335,6 +1335,70 @@ static int link_set_bridge(Link *link) {
         return r;
 }
 
+static int link_dhcp_save(Link *link) {
+        _cleanup_free_ char *temp_path = NULL;
+        _cleanup_fclose_ FILE *f = NULL;
+        sd_dhcp_lease *lease;
+        const void *p;
+        le64_t u, t;
+        size_t sz;
+        usec_t ts;
+        int r;
+
+        assert(link);
+        assert(link->lease_file);
+
+        if (!link->dhcp_client) {
+                (void) unlink(link->lease_file);
+                return 0;
+        }
+
+        r = sd_dhcp_client_get_lease(link->dhcp_client, &lease);
+        if (r < 0)
+                goto finish;
+        if (r == 0) {
+                (void) unlink(link->lease_file);
+                goto finish;
+        }
+
+        r = sd_dhcp_lease_get_raw(lease, &ts, &p, &sz);
+        if (r < 0)
+                goto finish;
+
+        t = htole64(ts);
+        u = htole64(sz);
+
+        r = fopen_temporary(link->lease_file, &f, &temp_path);
+        if (r < 0)
+                goto finish;
+
+        fchmod(fileno(f), 0644);
+
+        (void) fwrite(&t, 1, sizeof(t), f);
+        (void) fwrite(&u, 1, sizeof(u), f);
+        (void) fwrite(p, 1, sz, f);
+
+        r = fflush_and_check(f);
+        if (r < 0)
+                goto finish;
+
+        if (rename(temp_path, link->lease_file) < 0) {
+                r = -errno;
+                goto finish;
+        }
+
+finish:
+        if (r < 0) {
+                (void) unlink(link->lease_file);
+                if (temp_path)
+                        (void) unlink(temp_path);
+
+                log_link_error_errno(link, r, "Failed to save DHCPv4 lease data to %s: %m", link->lease_file);
+        }
+
+        return r;
+}
+
 static int link_lldp_save(Link *link) {
         _cleanup_free_ char *temp_path = NULL;
         _cleanup_fclose_ FILE *f = NULL;
@@ -3191,7 +3255,7 @@ int link_save(Link *link) {
                         fputc('\n', f);
                 }
 
-                r = dhcp_lease_save(link->dhcp_lease, link->lease_file);
+                r = link_dhcp_save(link);
                 if (r < 0)
                         goto fail;
 
