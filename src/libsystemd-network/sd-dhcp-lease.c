@@ -27,6 +27,7 @@
 #include "sd-dhcp-lease.h"
 
 #include "alloc-util.h"
+#include "dhcp-internal.h"
 #include "dhcp-lease-internal.h"
 #include "dhcp-protocol.h"
 #include "dns-domain.h"
@@ -282,6 +283,7 @@ sd_dhcp_lease *sd_dhcp_lease_unref(sd_dhcp_lease *lease) {
         free(lease->static_route);
         free(lease->client_id);
         free(lease->vendor_specific);
+        free(lease->error_message);
         free(lease);
 
         return NULL;
@@ -509,7 +511,37 @@ static int lease_parse_classless_routes(
         return 0;
 }
 
-int dhcp_lease_parse_options(uint8_t code, uint8_t len, const void *option, void *userdata) {
+static int dhcp_lease_insert_private_option(sd_dhcp_lease *lease, uint8_t tag, const void *data, uint8_t len) {
+        struct sd_dhcp_raw_option *cur, *option;
+
+        assert(lease);
+
+        LIST_FOREACH(options, cur, lease->private_options) {
+                if (tag < cur->tag)
+                        break;
+                if (tag == cur->tag) {
+                        log_debug("Ignoring duplicate option, tagged %i.", tag);
+                        return 0;
+                }
+        }
+
+        option = new(struct sd_dhcp_raw_option, 1);
+        if (!option)
+                return -ENOMEM;
+
+        option->tag = tag;
+        option->length = len;
+        option->data = memdup(data, len);
+        if (!option->data) {
+                free(option);
+                return -ENOMEM;
+        }
+
+        LIST_INSERT_BEFORE(options, lease->private_options, cur, option);
+        return 0;
+}
+
+static int dhcp_lease_parse_options(uint8_t code, uint8_t len, const void *option, void *userdata) {
         sd_dhcp_lease *lease = userdata;
         int r;
 
@@ -679,413 +711,7 @@ int dhcp_lease_parse_options(uint8_t code, uint8_t len, const void *option, void
         return 0;
 }
 
-int dhcp_lease_insert_private_option(sd_dhcp_lease *lease, uint8_t tag, const void *data, uint8_t len) {
-        struct sd_dhcp_raw_option *cur, *option;
-
-        assert(lease);
-
-        LIST_FOREACH(options, cur, lease->private_options) {
-                if (tag < cur->tag)
-                        break;
-                if (tag == cur->tag) {
-                        log_debug("Ignoring duplicate option, tagged %i.", tag);
-                        return 0;
-                }
-        }
-
-        option = new(struct sd_dhcp_raw_option, 1);
-        if (!option)
-                return -ENOMEM;
-
-        option->tag = tag;
-        option->length = len;
-        option->data = memdup(data, len);
-        if (!option->data) {
-                free(option);
-                return -ENOMEM;
-        }
-
-        LIST_INSERT_BEFORE(options, lease->private_options, cur, option);
-        return 0;
-}
-
-int dhcp_lease_new(sd_dhcp_lease **ret) {
-        sd_dhcp_lease *lease;
-
-        lease = new0(sd_dhcp_lease, 1);
-        if (!lease)
-                return -ENOMEM;
-
-        lease->router = INADDR_ANY;
-        lease->n_ref = 1;
-
-        *ret = lease;
-        return 0;
-}
-
-int dhcp_lease_save(sd_dhcp_lease *lease, const char *lease_file) {
-        _cleanup_free_ char *temp_path = NULL;
-        _cleanup_fclose_ FILE *f = NULL;
-        struct sd_dhcp_raw_option *option;
-        struct in_addr address;
-        const struct in_addr *addresses;
-        const void *client_id, *data;
-        size_t client_id_len, data_len;
-        const char *string;
-        uint16_t mtu;
-        _cleanup_free_ sd_dhcp_route **routes = NULL;
-        uint32_t t1, t2, lifetime;
-        int r;
-
-        assert(lease);
-        assert(lease_file);
-
-        r = fopen_temporary(lease_file, &f, &temp_path);
-        if (r < 0)
-                goto fail;
-
-        fchmod(fileno(f), 0644);
-
-        fprintf(f,
-                "# This is private data. Do not parse.\n");
-
-        r = sd_dhcp_lease_get_address(lease, &address);
-        if (r >= 0)
-                fprintf(f, "ADDRESS=%s\n", inet_ntoa(address));
-
-        r = sd_dhcp_lease_get_netmask(lease, &address);
-        if (r >= 0)
-                fprintf(f, "NETMASK=%s\n", inet_ntoa(address));
-
-        r = sd_dhcp_lease_get_router(lease, &address);
-        if (r >= 0)
-                fprintf(f, "ROUTER=%s\n", inet_ntoa(address));
-
-        r = sd_dhcp_lease_get_server_identifier(lease, &address);
-        if (r >= 0)
-                fprintf(f, "SERVER_ADDRESS=%s\n", inet_ntoa(address));
-
-        r = sd_dhcp_lease_get_next_server(lease, &address);
-        if (r >= 0)
-                fprintf(f, "NEXT_SERVER=%s\n", inet_ntoa(address));
-
-        r = sd_dhcp_lease_get_broadcast(lease, &address);
-        if (r >= 0)
-                fprintf(f, "BROADCAST=%s\n", inet_ntoa(address));
-
-        r = sd_dhcp_lease_get_mtu(lease, &mtu);
-        if (r >= 0)
-                fprintf(f, "MTU=%" PRIu16 "\n", mtu);
-
-        r = sd_dhcp_lease_get_t1(lease, &t1);
-        if (r >= 0)
-                fprintf(f, "T1=%" PRIu32 "\n", t1);
-
-        r = sd_dhcp_lease_get_t2(lease, &t2);
-        if (r >= 0)
-                fprintf(f, "T2=%" PRIu32 "\n", t2);
-
-        r = sd_dhcp_lease_get_lifetime(lease, &lifetime);
-        if (r >= 0)
-                fprintf(f, "LIFETIME=%" PRIu32 "\n", lifetime);
-
-        r = sd_dhcp_lease_get_dns(lease, &addresses);
-        if (r > 0) {
-                fputs("DNS=", f);
-                serialize_in_addrs(f, addresses, r);
-                fputs("\n", f);
-        }
-
-        r = sd_dhcp_lease_get_ntp(lease, &addresses);
-        if (r > 0) {
-                fputs("NTP=", f);
-                serialize_in_addrs(f, addresses, r);
-                fputs("\n", f);
-        }
-
-        r = sd_dhcp_lease_get_domainname(lease, &string);
-        if (r >= 0)
-                fprintf(f, "DOMAINNAME=%s\n", string);
-
-        r = sd_dhcp_lease_get_hostname(lease, &string);
-        if (r >= 0)
-                fprintf(f, "HOSTNAME=%s\n", string);
-
-        r = sd_dhcp_lease_get_root_path(lease, &string);
-        if (r >= 0)
-                fprintf(f, "ROOT_PATH=%s\n", string);
-
-        r = sd_dhcp_lease_get_routes(lease, &routes);
-        if (r > 0)
-                serialize_dhcp_routes(f, "ROUTES", routes, r);
-
-        r = sd_dhcp_lease_get_timezone(lease, &string);
-        if (r >= 0)
-                fprintf(f, "TIMEZONE=%s\n", string);
-
-        r = sd_dhcp_lease_get_client_id(lease, &client_id, &client_id_len);
-        if (r >= 0) {
-                _cleanup_free_ char *client_id_hex = NULL;
-
-                client_id_hex = hexmem(client_id, client_id_len);
-                if (!client_id_hex) {
-                        r = -ENOMEM;
-                        goto fail;
-                }
-                fprintf(f, "CLIENTID=%s\n", client_id_hex);
-        }
-
-        r = sd_dhcp_lease_get_vendor_specific(lease, &data, &data_len);
-        if (r >= 0) {
-                _cleanup_free_ char *option_hex = NULL;
-
-                option_hex = hexmem(data, data_len);
-                if (!option_hex) {
-                        r = -ENOMEM;
-                        goto fail;
-                }
-                fprintf(f, "VENDOR_SPECIFIC=%s\n", option_hex);
-        }
-
-        LIST_FOREACH(options, option, lease->private_options) {
-                char key[strlen("OPTION_000")+1];
-
-                xsprintf(key, "OPTION_%" PRIu8, option->tag);
-                r = serialize_dhcp_option(f, key, option->data, option->length);
-                if (r < 0)
-                        goto fail;
-        }
-
-        r = fflush_and_check(f);
-        if (r < 0)
-                goto fail;
-
-        if (rename(temp_path, lease_file) < 0) {
-                r = -errno;
-                goto fail;
-        }
-
-        return 0;
-
-fail:
-        if (temp_path)
-                (void) unlink(temp_path);
-
-        return log_error_errno(r, "Failed to save lease data %s: %m", lease_file);
-}
-
-int dhcp_lease_load(sd_dhcp_lease **ret, const char *lease_file) {
-
-        _cleanup_(sd_dhcp_lease_unrefp) sd_dhcp_lease *lease = NULL;
-        _cleanup_free_ char
-                *address = NULL,
-                *router = NULL,
-                *netmask = NULL,
-                *server_address = NULL,
-                *next_server = NULL,
-                *broadcast = NULL,
-                *dns = NULL,
-                *ntp = NULL,
-                *mtu = NULL,
-                *routes = NULL,
-                *client_id_hex = NULL,
-                *vendor_specific_hex = NULL,
-                *lifetime = NULL,
-                *t1 = NULL,
-                *t2 = NULL,
-                *options[SD_DHCP_OPTION_PRIVATE_LAST - SD_DHCP_OPTION_PRIVATE_BASE + 1] = {};
-
-        int r, i;
-
-        assert(lease_file);
-        assert(ret);
-
-        r = dhcp_lease_new(&lease);
-        if (r < 0)
-                return r;
-
-        r = parse_env_file(lease_file, NEWLINE,
-                           "ADDRESS", &address,
-                           "ROUTER", &router,
-                           "NETMASK", &netmask,
-                           "SERVER_IDENTIFIER", &server_address,
-                           "NEXT_SERVER", &next_server,
-                           "BROADCAST", &broadcast,
-                           "DNS", &dns,
-                           "NTP", &ntp,
-                           "MTU", &mtu,
-                           "DOMAINNAME", &lease->domainname,
-                           "HOSTNAME", &lease->hostname,
-                           "ROOT_PATH", &lease->root_path,
-                           "ROUTES", &routes,
-                           "CLIENTID", &client_id_hex,
-                           "TIMEZONE", &lease->timezone,
-                           "VENDOR_SPECIFIC", &vendor_specific_hex,
-                           "LIFETIME", &lifetime,
-                           "T1", &t1,
-                           "T2", &t2,
-                           "OPTION_224", &options[0],
-                           "OPTION_225", &options[1],
-                           "OPTION_226", &options[2],
-                           "OPTION_227", &options[3],
-                           "OPTION_228", &options[4],
-                           "OPTION_229", &options[5],
-                           "OPTION_230", &options[6],
-                           "OPTION_231", &options[7],
-                           "OPTION_232", &options[8],
-                           "OPTION_233", &options[9],
-                           "OPTION_234", &options[10],
-                           "OPTION_235", &options[11],
-                           "OPTION_236", &options[12],
-                           "OPTION_237", &options[13],
-                           "OPTION_238", &options[14],
-                           "OPTION_239", &options[15],
-                           "OPTION_240", &options[16],
-                           "OPTION_241", &options[17],
-                           "OPTION_242", &options[18],
-                           "OPTION_243", &options[19],
-                           "OPTION_244", &options[20],
-                           "OPTION_245", &options[21],
-                           "OPTION_246", &options[22],
-                           "OPTION_247", &options[23],
-                           "OPTION_248", &options[24],
-                           "OPTION_249", &options[25],
-                           "OPTION_250", &options[26],
-                           "OPTION_251", &options[27],
-                           "OPTION_252", &options[28],
-                           "OPTION_253", &options[29],
-                           "OPTION_254", &options[30],
-                           NULL);
-        if (r < 0)
-                return r;
-
-        if (address) {
-                r = inet_pton(AF_INET, address, &lease->address);
-                if (r <= 0)
-                        log_debug("Failed to parse address %s, ignoring.", address);
-        }
-
-        if (router) {
-                r = inet_pton(AF_INET, router, &lease->router);
-                if (r <= 0)
-                        log_debug("Failed to parse router %s, ignoring.", router);
-        }
-
-        if (netmask) {
-                r = inet_pton(AF_INET, netmask, &lease->subnet_mask);
-                if (r <= 0)
-                        log_debug("Failed to parse netmask %s, ignoring.", netmask);
-                else
-                        lease->have_subnet_mask = true;
-        }
-
-        if (server_address) {
-                r = inet_pton(AF_INET, server_address, &lease->server_address);
-                if (r <= 0)
-                        log_debug("Failed to parse server address %s, ignoring.", server_address);
-        }
-
-        if (next_server) {
-                r = inet_pton(AF_INET, next_server, &lease->next_server);
-                if (r <= 0)
-                        log_debug("Failed to parse next server %s, ignoring.", next_server);
-        }
-
-        if (broadcast) {
-                r = inet_pton(AF_INET, broadcast, &lease->broadcast);
-                if (r <= 0)
-                        log_debug("Failed to parse broadcast address %s, ignoring.", broadcast);
-                else
-                        lease->have_broadcast = true;
-        }
-
-        if (dns) {
-                r = deserialize_in_addrs(&lease->dns, dns);
-                if (r < 0)
-                        log_debug_errno(r, "Failed to deserialize DNS servers %s, ignoring: %m", dns);
-                else
-                        lease->dns_size = r;
-        }
-
-        if (ntp) {
-                r = deserialize_in_addrs(&lease->ntp, ntp);
-                if (r < 0)
-                        log_debug_errno(r, "Failed to deserialize NTP servers %s, ignoring: %m", ntp);
-                else
-                        lease->ntp_size = r;
-        }
-
-        if (mtu) {
-                r = safe_atou16(mtu, &lease->mtu);
-                if (r < 0)
-                        log_debug_errno(r, "Failed to parse MTU %s, ignoring: %m", mtu);
-        }
-
-        if (routes) {
-                r = deserialize_dhcp_routes(
-                                &lease->static_route,
-                                &lease->static_route_size,
-                                &lease->static_route_allocated,
-                                routes);
-                if (r < 0)
-                        log_debug_errno(r, "Failed to parse DHCP routes %s, ignoring: %m", routes);
-        }
-
-        if (lifetime) {
-                r = safe_atou32(lifetime, &lease->lifetime);
-                if (r < 0)
-                        log_debug_errno(r, "Failed to parse lifetime %s, ignoring: %m", lifetime);
-        }
-
-        if (t1) {
-                r = safe_atou32(t1, &lease->t1);
-                if (r < 0)
-                        log_debug_errno(r, "Failed to parse T1 %s, ignoring: %m", t1);
-        }
-
-        if (t2) {
-                r = safe_atou32(t2, &lease->t2);
-                if (r < 0)
-                        log_debug_errno(r, "Failed to parse T2 %s, ignoring: %m", t2);
-        }
-
-        if (client_id_hex) {
-                r = deserialize_dhcp_option(&lease->client_id, &lease->client_id_len, client_id_hex);
-                if (r < 0)
-                        log_debug_errno(r, "Failed to parse client ID %s, ignoring: %m", client_id_hex);
-        }
-
-        if (vendor_specific_hex) {
-                r = deserialize_dhcp_option(&lease->vendor_specific, &lease->vendor_specific_len, vendor_specific_hex);
-                if (r < 0)
-                        log_debug_errno(r, "Failed to parse vendor specific data %s, ignoring: %m", vendor_specific_hex);
-        }
-
-        for (i = 0; i <= SD_DHCP_OPTION_PRIVATE_LAST - SD_DHCP_OPTION_PRIVATE_BASE; i++) {
-                _cleanup_free_ void *data = NULL;
-                size_t len;
-
-                if (!options[i])
-                        continue;
-
-                r = deserialize_dhcp_option(&data, &len, options[i]);
-                if (r < 0) {
-                        log_debug_errno(r, "Failed to parse private DHCP option %s, ignoring: %m", options[i]);
-                        continue;
-                }
-
-                r = dhcp_lease_insert_private_option(lease, SD_DHCP_OPTION_PRIVATE_BASE + i, data, len);
-                if (r < 0)
-                        return r;
-        }
-
-        *ret = lease;
-        lease = NULL;
-
-        return 0;
-}
-
-int dhcp_lease_set_default_subnet_mask(sd_dhcp_lease *lease) {
+static int dhcp_lease_set_default_subnet_mask(sd_dhcp_lease *lease) {
         struct in_addr address, mask;
         int r;
 
@@ -1103,6 +729,63 @@ int dhcp_lease_set_default_subnet_mask(sd_dhcp_lease *lease) {
 
         lease->subnet_mask = mask.s_addr;
         lease->have_subnet_mask = true;
+
+        return 0;
+}
+
+int sd_dhcp_lease_from_raw(sd_dhcp_lease **ret, uint64_t timestamp, const void *raw, size_t raw_size) {
+        _cleanup_(sd_dhcp_lease_unrefp) sd_dhcp_lease *lease = NULL;
+        const DHCPMessage *message = raw;
+        int r;
+
+        assert_return(timestamp != 0, -EINVAL);
+        assert_return(raw, -EINVAL);
+        assert_return(raw_size != 0, -EINVAL);
+
+        lease = malloc0(ALIGN(sizeof(sd_dhcp_lease)) + raw_size);
+        if (!lease)
+                return -ENOMEM;
+
+        lease->n_ref = 1;
+        lease->timestamp = timestamp;
+        lease->raw_size = raw_size;
+        memcpy(DHCP_LEASE_RAW(lease), raw, raw_size);
+
+        r = dhcp_option_parse(message, raw_size, dhcp_lease_parse_options, lease, &lease->error_message);
+        if (r < 0)
+                return r;
+        else
+                lease->type = r;
+
+        lease->next_server = message->siaddr;
+        lease->address = message->yiaddr;
+
+        if (lease->address == INADDR_ANY ||
+            lease->server_address == INADDR_ANY ||
+            lease->lifetime == 0)
+                return -ENOMSG;
+
+        if (lease->subnet_mask == INADDR_ANY) {
+                r = dhcp_lease_set_default_subnet_mask(lease);
+                if (r < 0)
+                        return -ENOMSG;
+        }
+
+        *ret = lease;
+        lease = NULL;
+
+        return r;
+}
+
+int sd_dhcp_lease_get_raw(sd_dhcp_lease *lease, uint64_t *timestamp, void **raw, size_t *raw_size) {
+        assert_return(lease, -EINVAL);
+        assert_return(timestamp, -EINVAL);
+        assert_return(raw, -EINVAL);
+        assert_return(raw_size, -EINVAL);
+
+        *timestamp = lease->timestamp;
+        *raw = DHCP_LEASE_RAW(lease);
+        *raw_size = lease->raw_size;
 
         return 0;
 }

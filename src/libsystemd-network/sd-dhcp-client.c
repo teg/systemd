@@ -1126,14 +1126,17 @@ static int client_timeout_t1(sd_event_source *s, uint64_t usec,
         return client_initialize_time_events(client);
 }
 
-static int client_handle_offer(sd_dhcp_client *client, DHCPMessage *offer,
-                               size_t len) {
+static int client_handle_offer(sd_dhcp_client *client, DHCPMessage *offer, size_t len) {
         _cleanup_(sd_dhcp_lease_unrefp) sd_dhcp_lease *lease = NULL;
         int r;
 
-        r = dhcp_lease_new(&lease);
+        r = sd_dhcp_lease_from_raw(&lease, USEC_INFINITY, offer, len);
         if (r < 0)
                 return r;
+        else if (lease->type != DHCP_OFFER) {
+                log_dhcp_client(client, "received message was not an OFFER, ignoring");
+                return -ENOMSG;
+        }
 
         if (client->client_id_len) {
                 r = dhcp_lease_set_client_id(lease,
@@ -1141,32 +1144,6 @@ static int client_handle_offer(sd_dhcp_client *client, DHCPMessage *offer,
                                              client->client_id_len);
                 if (r < 0)
                         return r;
-        }
-
-        r = dhcp_option_parse(offer, len, dhcp_lease_parse_options, lease, NULL);
-        if (r != DHCP_OFFER) {
-                log_dhcp_client(client, "received message was not an OFFER, ignoring");
-                return -ENOMSG;
-        }
-
-        lease->next_server = offer->siaddr;
-        lease->address = offer->yiaddr;
-
-        if (lease->address == 0 ||
-            lease->server_address == 0 ||
-            lease->lifetime == 0) {
-                log_dhcp_client(client, "received lease lacks address, server address or lease lifetime, ignoring");
-                return -ENOMSG;
-        }
-
-        if (!lease->have_subnet_mask) {
-                r = dhcp_lease_set_default_subnet_mask(lease);
-                if (r < 0) {
-                        log_dhcp_client(client, "received lease lacks subnet "
-                                        "mask, and a fallback one can not be "
-                                        "generated, ignoring");
-                        return -ENOMSG;
-                }
         }
 
         sd_dhcp_lease_unref(client->lease);
@@ -1191,55 +1168,20 @@ static int client_handle_forcerenew(sd_dhcp_client *client, DHCPMessage *force,
         return 0;
 }
 
-static int client_handle_ack(sd_dhcp_client *client, DHCPMessage *ack,
-                             size_t len) {
+static int client_handle_ack(sd_dhcp_client *client, DHCPMessage *ack, size_t len) {
         _cleanup_(sd_dhcp_lease_unrefp) sd_dhcp_lease *lease = NULL;
         _cleanup_free_ char *error_message = NULL;
         int r;
 
-        r = dhcp_lease_new(&lease);
+        r = sd_dhcp_lease_from_raw(&lease, client->request_sent, ack, len);
         if (r < 0)
                 return r;
-
-        if (client->client_id_len) {
-                r = dhcp_lease_set_client_id(lease,
-                                             (uint8_t *) &client->client_id,
-                                             client->client_id_len);
-                if (r < 0)
-                        return r;
-        }
-
-        r = dhcp_option_parse(ack, len, dhcp_lease_parse_options, lease, &error_message);
-        if (r == DHCP_NAK) {
-                log_dhcp_client(client, "NAK: %s", strna(error_message));
+        else if (lease->type == DHCP_NAK) {
+                log_dhcp_client(client, "NAK: %s", strna(lease->error_message));
                 return -EADDRNOTAVAIL;
-        }
-
-        if (r != DHCP_ACK) {
+        } else if (lease->type != DHCP_ACK) {
                 log_dhcp_client(client, "received message was not an ACK, ignoring");
                 return -ENOMSG;
-        }
-
-        lease->next_server = ack->siaddr;
-
-        lease->address = ack->yiaddr;
-
-        if (lease->address == INADDR_ANY ||
-            lease->server_address == INADDR_ANY ||
-            lease->lifetime == 0) {
-                log_dhcp_client(client, "received lease lacks address, server "
-                                "address or lease lifetime, ignoring");
-                return -ENOMSG;
-        }
-
-        if (lease->subnet_mask == INADDR_ANY) {
-                r = dhcp_lease_set_default_subnet_mask(lease);
-                if (r < 0) {
-                        log_dhcp_client(client, "received lease lacks subnet "
-                                        "mask, and a fallback one can not be "
-                                        "generated, ignoring");
-                        return -ENOMSG;
-                }
         }
 
         r = SD_DHCP_CLIENT_EVENT_IP_ACQUIRE;
@@ -1254,6 +1196,15 @@ static int client_handle_ack(sd_dhcp_client *client, DHCPMessage *ack,
                 client->lease = sd_dhcp_lease_unref(client->lease);
         }
 
+        if (client->client_id_len) {
+                r = dhcp_lease_set_client_id(lease,
+                                             (uint8_t *) &client->client_id,
+                                             client->client_id_len);
+                if (r < 0)
+                        return r;
+        }
+
+        sd_dhcp_lease_unref(client->lease);
         client->lease = lease;
         lease = NULL;
 

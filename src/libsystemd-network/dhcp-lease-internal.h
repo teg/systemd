@@ -46,10 +46,17 @@ struct sd_dhcp_raw_option {
 struct sd_dhcp_lease {
         unsigned n_ref;
 
+        int type;
+
+        usec_t timestamp;
+        size_t raw_size;
+
         /* each 0 if unset */
         uint32_t t1;
         uint32_t t2;
         uint32_t lifetime;
+
+        char *error_message;
 
         /* each 0 if unset */
         be32_t address;
@@ -89,14 +96,8 @@ struct sd_dhcp_lease {
         LIST_HEAD(struct sd_dhcp_raw_option, private_options);
 };
 
-int dhcp_lease_new(sd_dhcp_lease **ret);
-
-int dhcp_lease_parse_options(uint8_t code, uint8_t len, const void *option, void *userdata);
-int dhcp_lease_insert_private_option(sd_dhcp_lease *lease, uint8_t tag, const void *data, uint8_t len);
-
-int dhcp_lease_set_default_subnet_mask(sd_dhcp_lease *lease);
-
 int dhcp_lease_set_client_id(sd_dhcp_lease *lease, const void *client_id, size_t client_id_len);
 
-int dhcp_lease_save(sd_dhcp_lease *lease, const char *lease_file);
-int dhcp_lease_load(sd_dhcp_lease **ret, const char *lease_file);
+static inline void *DHCP_LEASE_RAW(const sd_dhcp_lease *lease) {
+        return (uint8_t*) lease + ALIGN(sizeof(sd_dhcp_lease));
+}

@@ -33,6 +33,9 @@ _SD_BEGIN_DECLARATIONS;
 typedef struct sd_dhcp_lease sd_dhcp_lease;
 typedef struct sd_dhcp_route sd_dhcp_route;
 
+int sd_dhcp_lease_from_raw(sd_dhcp_lease **ret, uint64_t timestamp, const void *raw, size_t raw_size);
+int sd_dhcp_lease_get_raw(sd_dhcp_lease *lease, uint64_t *timestamp, void **raw, size_t *raw_size);
+
 sd_dhcp_lease *sd_dhcp_lease_ref(sd_dhcp_lease *lease);
 sd_dhcp_lease *sd_dhcp_lease_unref(sd_dhcp_lease *lease);
 
