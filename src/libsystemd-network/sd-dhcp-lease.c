@@ -541,8 +541,25 @@ static int dhcp_lease_insert_private_option(sd_dhcp_lease *lease, uint8_t tag, c
         return 0;
 }
 
+static uint64_t compute_timeout(usec_t timestamp, uint32_t lifetime, double factor) {
+        assert(timestamp > 0);
+        assert(lifetime < (uint32_t) -1);
+        assert(factor > 0.0);
+
+        if (timestamp == USEC_INFINITY)
+                return 0;
+
+        if (lifetime > 3)
+                lifetime -= 3;
+        else
+                lifetime = 0;
+
+        return timestamp + (lifetime * USEC_PER_SEC * factor);
+}
+
 static int dhcp_lease_parse_options(uint8_t code, uint8_t len, const void *option, void *userdata) {
         sd_dhcp_lease *lease = userdata;
+        uint32_t lifetime;
         int r;
 
         assert(lease);
@@ -550,9 +567,15 @@ static int dhcp_lease_parse_options(uint8_t code, uint8_t len, const void *optio
         switch(code) {
 
         case SD_DHCP_OPTION_IP_ADDRESS_LEASE_TIME:
-                r = lease_parse_u32(option, len, &lease->lifetime, 1);
-                if (r < 0)
+                r = lease_parse_u32(option, len, &lifetime, 1);
+                if (r < 0 || lifetime == 0)
                         log_debug_errno(r, "Failed to parse lease time, ignoring: %m");
+
+                if (lifetime == (uint32_t) -1)
+                        break;
+
+                lease->expiry = compute_timeout(lease->timestamp, lifetime, 1);
+                lease->lifetime = lifetime;
 
                 break;
 
@@ -636,15 +659,27 @@ static int dhcp_lease_parse_options(uint8_t code, uint8_t len, const void *optio
                 break;
 
         case SD_DHCP_OPTION_RENEWAL_T1_TIME:
-                r = lease_parse_u32(option, len, &lease->t1, 1);
+                r = lease_parse_u32(option, len, &lifetime, 1);
                 if (r < 0)
                         log_debug_errno(r, "Failed to parse T1 time, ignoring: %m");
+
+                if (lifetime == 0 || lifetime == (uint32_t) -1)
+                        break;
+
+                lease->t1 = compute_timeout(lease->timestamp, lifetime, 1);
+
                 break;
 
         case SD_DHCP_OPTION_REBINDING_T2_TIME:
-                r = lease_parse_u32(option, len, &lease->t2, 1);
+                r = lease_parse_u32(option, len, &lifetime, 1);
                 if (r < 0)
                         log_debug_errno(r, "Failed to parse T2 time, ignoring: %m");
+
+                if (lifetime == 0 || lifetime == (uint32_t) -1)
+                        break;
+
+                lease->t2 = compute_timeout(lease->timestamp, lifetime, 1);
+
                 break;
 
         case SD_DHCP_OPTION_CLASSLESS_STATIC_ROUTE:
@@ -751,11 +786,25 @@ int sd_dhcp_lease_from_raw(sd_dhcp_lease **ret, uint64_t timestamp, const void *
         lease->raw_size = raw_size;
         memcpy(DHCP_LEASE_RAW(lease), raw, raw_size);
 
+        lease->expiry = USEC_INFINITY;
+        lease->t2 = USEC_INFINITY;
+        lease->t1 = USEC_INFINITY;
+
         r = dhcp_option_parse(message, raw_size, dhcp_lease_parse_options, lease, &lease->error_message);
         if (r < 0)
                 return r;
         else
                 lease->type = r;
+
+        if (lease->expiry == USEC_INFINITY) {
+                /* discard T1 and T2 if the lease never expires */
+                lease->t1 = USEC_INFINITY;
+                lease->t2 = USEC_INFINITY;
+        } else if (lease->t1 >= lease->t2 || lease->t2 >= lease->expiry) {
+                /* set T1 and T2 to their default values if they are invalid or missing */
+                lease->t1 = compute_timeout(lease->timestamp, lease->lifetime, 0.5);
+                lease->t2 = compute_timeout(lease->timestamp, lease->lifetime, 7.0 / 8.0);
+        }
 
         lease->next_server = message->siaddr;
         lease->address = message->yiaddr;

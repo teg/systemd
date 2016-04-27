@@ -51,12 +51,15 @@ struct sd_dhcp_lease {
         usec_t timestamp;
         size_t raw_size;
 
-        /* each 0 if unset */
-        uint32_t t1;
-        uint32_t t2;
+        char *error_message;
+
+        /* 0 if unset */
         uint32_t lifetime;
 
-        char *error_message;
+        /* each USEC_INFINITY if unset */
+        usec_t t1;
+        usec_t t2;
+        usec_t expiry;
 
         /* each 0 if unset */
         be32_t address;
