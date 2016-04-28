@@ -1541,11 +1541,15 @@ static int link_acquire_conf(Link *link) {
         }
 
         if (link_dhcp4_enabled(link)) {
+                usec_t time_now;
+
                 assert(link->dhcp_client);
 
                 log_link_debug(link, "Acquiring DHCPv4 lease");
 
-                r = sd_dhcp_client_start(link->dhcp_client);
+                assert_se(sd_event_now(link->manager->event, clock_boottime_or_monotonic(), &time_now) >= 0);
+
+                r = sd_dhcp_client_start(link->dhcp_client, time_now);
                 if (r < 0)
                         return log_link_warning_errno(link, r, "Could not acquire DHCPv4 lease: %m");
         }
@@ -2859,6 +2863,8 @@ int link_update(Link *link, sd_netlink_message *m) {
 
         assert(link);
         assert(link->ifname);
+        assert(link->manager);
+        assert(link->manager->event);
         assert(m);
 
         if (link->state == LINK_STATE_LINGER) {
@@ -2930,10 +2936,14 @@ int link_update(Link *link, sd_netlink_message *m) {
                         }
 
                         if (link->dhcp_client) {
+                                usec_t time_now;
+
+                                assert_se(sd_event_now(link->manager->event, clock_boottime_or_monotonic(), &time_now) >= 0);
+
                                 r = sd_dhcp_client_set_mac(link->dhcp_client,
                                                            (const uint8_t *) &link->mac,
                                                            sizeof (link->mac),
-                                                           ARPHRD_ETHER);
+                                                           ARPHRD_ETHER, time_now);
                                 if (r < 0)
                                         return log_link_warning_errno(link, r, "Could not update MAC address in DHCP client: %m");
 
@@ -2942,13 +2952,13 @@ int link_update(Link *link, sd_netlink_message *m) {
                                                                          link->network->iaid,
                                                                          link->network->dhcp_duid_type,
                                                                          link->network->dhcp_duid,
-                                                                         link->network->dhcp_duid_len);
+                                                                         link->network->dhcp_duid_len, time_now);
                                 else
                                         r = sd_dhcp_client_set_iaid_duid(link->dhcp_client,
                                                                          link->network->iaid,
                                                                          link->manager->dhcp_duid_type,
                                                                          link->manager->dhcp_duid,
-                                                                         link->manager->dhcp_duid_len);
+                                                                         link->manager->dhcp_duid_len, time_now);
                                 if (r < 0)
                                         return log_link_warning_errno(link, r, "Could not update DUID/IAID in DHCP client: %m");
                         }

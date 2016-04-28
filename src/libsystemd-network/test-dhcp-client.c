@@ -48,7 +48,7 @@ static int test_dhcp_hangcheck(sd_event_source *s, uint64_t usec, void *userdata
         return 0;
 }
 
-static void test_request_basic(sd_event *e) {
+static void test_request_basic(void) {
         int r;
 
         sd_dhcp_client *client;
@@ -60,9 +60,6 @@ static void test_request_basic(sd_event *e) {
 
         assert_se(r >= 0);
         assert_se(client);
-
-        r = sd_dhcp_client_attach_event(client, e, 0);
-        assert_se(r >= 0);
 
         assert_se(sd_dhcp_client_set_request_option(NULL, 0) == -EINVAL);
         assert_se(sd_dhcp_client_set_request_address(NULL, NULL) == -EINVAL);
@@ -229,7 +226,7 @@ static int test_discover_message_verify(size_t size, struct DHCPMessage *dhcp) {
         return 0;
 }
 
-static void test_discover_message(sd_event *e) {
+static void test_discover_message(void) {
         sd_dhcp_client *client;
         int res, r;
 
@@ -240,17 +237,14 @@ static void test_discover_message(sd_event *e) {
         assert_se(r >= 0);
         assert_se(client);
 
-        r = sd_dhcp_client_attach_event(client, e, 0);
-        assert_se(r >= 0);
-
         assert_se(sd_dhcp_client_set_index(client, 42) >= 0);
-        assert_se(sd_dhcp_client_set_mac(client, mac_addr, ETH_ALEN, ARPHRD_ETHER) >= 0);
+        assert_se(sd_dhcp_client_set_mac(client, mac_addr, ETH_ALEN, ARPHRD_ETHER, 0) >= 0);
 
         assert_se(sd_dhcp_client_set_request_option(client, 248) >= 0);
 
         callback_recv = test_discover_message_verify;
 
-        res = sd_dhcp_client_start(client);
+        res = sd_dhcp_client_start(client, 0);
 
         assert_se(res == 0 || res == -EINPROGRESS);
 

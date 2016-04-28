@@ -95,11 +95,11 @@ int sd_dhcp_client_set_request_address(sd_dhcp_client *client,
 int sd_dhcp_client_set_request_broadcast(sd_dhcp_client *client, int broadcast);
 int sd_dhcp_client_set_index(sd_dhcp_client *client, int interface_index);
 int sd_dhcp_client_set_mac(sd_dhcp_client *client, const uint8_t *addr,
-                           size_t addr_len, uint16_t arp_type);
+                           size_t addr_len, uint16_t arp_type, uint64_t time_now);
 int sd_dhcp_client_set_client_id(sd_dhcp_client *client, uint8_t type,
-                                 const uint8_t *data, size_t data_len);
+                                 const uint8_t *data, size_t data_len, uint64_t time_now);
 int sd_dhcp_client_set_iaid_duid(sd_dhcp_client *client, uint32_t iaid,
-                                 uint16_t duid_type, uint8_t *duid, size_t duid_len);
+                                 uint16_t duid_type, uint8_t *duid, size_t duid_len, uint64_t time_now);
 int sd_dhcp_client_get_client_id(sd_dhcp_client *client, uint8_t *type,
                                  const uint8_t **data, size_t *data_len);
 int sd_dhcp_client_set_mtu(sd_dhcp_client *client, uint32_t mtu);
@@ -107,17 +107,20 @@ int sd_dhcp_client_set_hostname(sd_dhcp_client *client, const char *hostname);
 int sd_dhcp_client_set_vendor_class_identifier(sd_dhcp_client *client, const char *vci);
 int sd_dhcp_client_get_lease(sd_dhcp_client *client, sd_dhcp_lease **ret);
 
+int sd_dhcp_client_dispatch_timeout(sd_dhcp_client *client, uint64_t time_now);
+int sd_dhcp_client_dispatch_io(sd_dhcp_client *client, uint32_t revents, uint64_t time_now);
+
+int sd_dhcp_client_get_fd(sd_dhcp_client *client);
+int sd_dhcp_client_get_events(sd_dhcp_client *client);
+int sd_dhcp_client_get_timeout(sd_dhcp_client *client, uint64_t *timeout);
+
 int sd_dhcp_client_stop(sd_dhcp_client *client);
-int sd_dhcp_client_start(sd_dhcp_client *client);
+int sd_dhcp_client_start(sd_dhcp_client *client, uint64_t time_now);
 
 sd_dhcp_client *sd_dhcp_client_ref(sd_dhcp_client *client);
 sd_dhcp_client *sd_dhcp_client_unref(sd_dhcp_client *client);
 
 int sd_dhcp_client_new(sd_dhcp_client **ret);
-
-int sd_dhcp_client_attach_event(sd_dhcp_client *client, sd_event *event, int64_t priority);
-int sd_dhcp_client_detach_event(sd_dhcp_client *client);
-sd_event *sd_dhcp_client_get_event(sd_dhcp_client *client);
 
 _SD_DEFINE_POINTER_CLEANUP_FUNC(sd_dhcp_client, sd_dhcp_client_unref);
 

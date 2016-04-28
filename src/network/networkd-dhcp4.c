@@ -532,9 +532,12 @@ static void dhcp4_handler(sd_dhcp_client *client, int event, void *userdata) {
 }
 
 int dhcp4_configure(Link *link) {
+        usec_t time_now;
         int r;
 
         assert(link);
+        assert(link->manager);
+        assert(link->manager->event);
         assert(link->network);
         assert(link->network->dhcp & ADDRESS_FAMILY_IPV4);
 
@@ -544,13 +547,11 @@ int dhcp4_configure(Link *link) {
                         return r;
         }
 
-        r = sd_dhcp_client_attach_event(link->dhcp_client, NULL, 0);
-        if (r < 0)
-                return r;
+        assert_se(sd_event_now(link->manager->event, clock_boottime_or_monotonic(), &time_now) >= 0);
 
         r = sd_dhcp_client_set_mac(link->dhcp_client,
                                    (const uint8_t *) &link->mac,
-                                   sizeof (link->mac), ARPHRD_ETHER);
+                                   sizeof (link->mac), ARPHRD_ETHER, time_now);
         if (r < 0)
                 return r;
 
@@ -635,13 +636,13 @@ int dhcp4_configure(Link *link) {
                                                          link->network->iaid,
                                                          link->network->dhcp_duid_type,
                                                          link->network->dhcp_duid,
-                                                         link->network->dhcp_duid_len);
+                                                         link->network->dhcp_duid_len, time_now);
                 else
                         r = sd_dhcp_client_set_iaid_duid(link->dhcp_client,
                                                          link->network->iaid,
                                                          link->manager->dhcp_duid_type,
                                                          link->manager->dhcp_duid,
-                                                         link->manager->dhcp_duid_len);
+                                                         link->manager->dhcp_duid_len, time_now);
                 if (r < 0)
                         return r;
                 break;
@@ -649,7 +650,7 @@ int dhcp4_configure(Link *link) {
                 r = sd_dhcp_client_set_client_id(link->dhcp_client,
                                                  ARPHRD_ETHER,
                                                  (const uint8_t *) &link->mac,
-                                                 sizeof (link->mac));
+                                                 sizeof (link->mac), time_now);
                 if (r < 0)
                         return r;
                 break;
