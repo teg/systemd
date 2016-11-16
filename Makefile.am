@@ -5747,6 +5747,28 @@ libnetworkd_core_la_LIBADD = \
 	libsystemd-network.la \
 	libsystemd-shared.la
 
+noinst_LTLIBRARIES += \
+	libnetworkd-rtnl.la
+
+libnetworkd_rtnl_la_CFLAGS = \
+	$(AM_CFLAGS)
+
+libnetworkd_rtnl_la_SOURCES = \
+	src/network/rtnl/address.h \
+	src/network/rtnl/address.c \
+	src/network/rtnl/link.h \
+	src/network/rtnl/link.c \
+	src/network/rtnl/manager.h \
+	src/network/rtnl/manager.c \
+	src/network/rtnl/route.h \
+	src/network/rtnl/route.c \
+	src/network/rtnl/rtnl.h \
+	src/network/rtnl/slot.h \
+	src/network/rtnl/slot.c
+
+libnetworkd_rtnl_la_LIBADD = \
+	libsystemd-shared.la
+
 rootlibexec_PROGRAMS += \
 	systemd-networkd-wait-online
 
@@ -5793,6 +5815,12 @@ test_network_SOURCES = \
 test_network_LDADD = \
 	libnetworkd-core.la
 
+test_network_rtnl_SOURCES = \
+	src/network/rtnl/test.c
+
+test_network_rtnl_LDADD = \
+	libnetworkd-rtnl.la
+
 if HAVE_LIBIPTC
 test_network_LDADD += \
 	libfirewall.la
@@ -5815,6 +5843,9 @@ tests += \
 	test-networkd-conf \
 	test-network \
 	test-network-tables
+
+manual_tests += \
+	test-network-rtnl
 
 dist_systemunit_DATA += \
 	units/systemd-networkd.socket

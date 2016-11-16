@@ -246,6 +246,7 @@
 /test-netlink-manual
 /test-networkd-conf
 /test-network
+/test-network-rtnl
 /test-network-tables
 /test-ns
 /test-nss
