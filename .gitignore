@@ -242,6 +242,7 @@
 /test-netlink-manual
 /test-networkd-conf
 /test-network
+/test-network-netlink
 /test-network-tables
 /test-ns
 /test-nss

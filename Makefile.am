@@ -5692,6 +5692,19 @@ libnetworkd_core_la_LIBADD = \
 	libsystemd-network.la \
 	libsystemd-shared.la
 
+noinst_LTLIBRARIES += \
+	libnetworkd-netlink.la
+
+libnetworkd_netlink_la_CFLAGS = \
+	$(AM_CFLAGS)
+
+libnetworkd_netlink_la_SOURCES = \
+	src/network/netlink/manager.h \
+	src/network/netlink/manager.c
+
+libnetworkd_netlink_la_LIBADD = \
+	libsystemd-shared.la
+
 rootlibexec_PROGRAMS += \
 	systemd-networkd-wait-online
 
@@ -5735,6 +5748,12 @@ test_network_SOURCES = \
 test_network_LDADD = \
 	libnetworkd-core.la
 
+test_network_netlink_SOURCES = \
+	src/network/netlink/test.c
+
+test_network_netlink_LDADD = \
+	libnetworkd-netlink.la
+
 if HAVE_LIBIPTC
 test_network_LDADD += \
 	libfirewall.la
@@ -5757,6 +5776,9 @@ tests += \
 	test-networkd-conf \
 	test-network \
 	test-network-tables
+
+manual_tests += \
+	test-network-netlink
 
 dist_systemunit_DATA += \
 	units/systemd-networkd.socket
