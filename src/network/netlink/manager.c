@@ -27,7 +27,9 @@
 #include "fd-util.h"
 #include "hashmap.h"
 #include "netlink-util.h"
+#include "set.h"
 
+#include "netlink/address.h"
 #include "netlink/link.h"
 #include "netlink/manager.h"
 
@@ -43,6 +45,7 @@ struct NLManager{
         bool enumerating_routes:1;
 
         Hashmap *links;
+        Set *addresses;
 };
 
 int nl_manager_new(NLManager **ret, sd_event *event) {
@@ -58,6 +61,10 @@ int nl_manager_new(NLManager **ret, sd_event *event) {
         if (!m->links)
                 return -ENOMEM;
 
+        m->addresses = set_new(&nl_address_hash_ops);
+        if (!m->addresses)
+                return -ENOMEM;
+
         *ret = m;
         m = NULL;
 
@@ -65,10 +72,15 @@ int nl_manager_new(NLManager **ret, sd_event *event) {
 }
 
 void nl_manager_free(NLManager *m) {
+        NLAddress *address;
         NLLink *link;
 
         if (!m)
                 return;
+
+        while ((address = set_steal_first(m->addresses)))
+                nl_address_unref(address);
+        set_free(m->addresses);
 
         while ((link = hashmap_steal_first(m->links)))
                 nl_link_unref(link);
@@ -136,24 +148,54 @@ static int remove_link(sd_netlink *rtnl, sd_netlink_message *message, void *user
 
 static int add_address(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
         NLManager *m = userdata;
+        _cleanup_(nl_address_unrefp) NLAddress *new_address = NULL, *old_address = NULL;
+        int r;
 
         if (m->enumerating_addresses)
                 return 0;
 
-        /* XXX: implement address tracking */
-        log_info("rtnl: got new address");
+        r = nl_address_new(&new_address, message);
+        if (r < 0)
+                return r;
+
+        old_address = set_remove(m->addresses, new_address);
+        r = set_put(m->addresses, new_address);
+        if (r < 0)
+                return r;
+        new_address = NULL;
+
+        if (old_address) {
+                log_info("rtnl: updated address");
+
+                /* XXX: implement subscriptions */
+        } else {
+                log_info("rtnl: added address");
+
+                /* XXX: implement subscriptions */
+        }
 
         return 1;
 }
 
 static int remove_address(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
         NLManager *m = userdata;
+        _cleanup_(nl_address_unrefp) NLAddress *new_address = NULL, *old_address = NULL;
+        int r;
 
         if (m->enumerating_addresses)
                 return 0;
 
-        /* XXX: implement address tracking */
-        log_info("rtnl: lost address");
+        r = nl_address_new(&new_address, message);
+        if (r < 0)
+                return r;
+
+        old_address = set_remove(m->addresses, new_address);
+        if (!old_address)
+                return -ENODEV;
+
+        log_info("rtnl: removed address");
+
+        /* XXX: implement subscriptions */
 
         return 1;
 }
