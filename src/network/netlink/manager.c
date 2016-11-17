@@ -25,8 +25,10 @@
 
 #include "alloc-util.h"
 #include "fd-util.h"
+#include "hashmap.h"
 #include "netlink-util.h"
 
+#include "netlink/link.h"
 #include "netlink/manager.h"
 
 /* use 16 MB for receive socket kernel queue. */
@@ -39,6 +41,8 @@ struct NLManager{
         bool enumerating_links:1;
         bool enumerating_addresses:1;
         bool enumerating_routes:1;
+
+        Hashmap *links;
 };
 
 int nl_manager_new(NLManager **ret, sd_event *event) {
@@ -50,6 +54,10 @@ int nl_manager_new(NLManager **ret, sd_event *event) {
 
         m->event = sd_event_ref(event);
 
+        m->links = hashmap_new(NULL);
+        if (!m->links)
+                return -ENOMEM;
+
         *ret = m;
         m = NULL;
 
@@ -57,8 +65,14 @@ int nl_manager_new(NLManager **ret, sd_event *event) {
 }
 
 void nl_manager_free(NLManager *m) {
+        NLLink *link;
+
         if (!m)
                 return;
+
+        while ((link = hashmap_steal_first(m->links)))
+                nl_link_unref(link);
+        hashmap_free(m->links);
 
         sd_netlink_unref(m->rtnl);
         sd_event_unref(m->event);
@@ -68,24 +82,54 @@ void nl_manager_free(NLManager *m) {
 
 static int add_link(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
         NLManager *m = userdata;
+        _cleanup_(nl_link_unrefp) NLLink *new_link = NULL, *old_link = NULL;
+        int r;
 
         if (m->enumerating_links)
                 return 0;
 
-        /* XXX: implement link tracking */
-        log_info("rtnl: got new link");
+        r = nl_link_new(&new_link, message);
+        if (r < 0)
+                return r;
+
+        old_link = hashmap_remove(m->links, INT_TO_PTR(new_link->ifindex));
+        r = hashmap_put(m->links, INT_TO_PTR(new_link->ifindex), new_link);
+        if (r < 0)
+                return r;
+        new_link = NULL;
+
+        if (old_link) {
+                log_info("rtnl: updated link");
+
+                /* XXX: implement subscriptions */
+        } else {
+                log_info("rtnl: added link");
+
+                /* XXX: implement subscriptions */
+        }
 
         return 1;
 }
 
 static int remove_link(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
         NLManager *m = userdata;
+        _cleanup_(nl_link_unrefp) NLLink *new_link = NULL, *old_link = NULL;
+        int r;
 
         if (m->enumerating_links)
                 return 0;
 
-        /* XXX: implement link tracking */
-        log_info("rtnl: lost link");
+        r = nl_link_new(&new_link, message);
+        if (r < 0)
+                return r;
+
+        old_link = hashmap_remove(m->links, INT_TO_PTR(new_link->ifindex));
+        if (!old_link)
+                return -ENODEV;
+
+        log_info("rtnl: removed link");
+
+        /* XXX: implement subscriptions */
 
         return 1;
 }

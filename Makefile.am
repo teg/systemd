@@ -5699,6 +5699,8 @@ libnetworkd_netlink_la_CFLAGS = \
 	$(AM_CFLAGS)
 
 libnetworkd_netlink_la_SOURCES = \
+	src/network/netlink/link.h \
+	src/network/netlink/link.c \
 	src/network/netlink/manager.h \
 	src/network/netlink/manager.c
 
