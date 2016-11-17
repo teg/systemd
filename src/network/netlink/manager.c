@@ -32,6 +32,7 @@
 #include "netlink/address.h"
 #include "netlink/link.h"
 #include "netlink/manager.h"
+#include "netlink/route.h"
 
 /* use 16 MB for receive socket kernel queue. */
 #define RCVBUF_SIZE    (16*1024*1024)
@@ -46,6 +47,7 @@ struct NLManager{
 
         Hashmap *links;
         Set *addresses;
+        Set *routes;
 };
 
 int nl_manager_new(NLManager **ret, sd_event *event) {
@@ -65,6 +67,10 @@ int nl_manager_new(NLManager **ret, sd_event *event) {
         if (!m->addresses)
                 return -ENOMEM;
 
+        m->routes = set_new(&nl_route_hash_ops);
+        if (!m->routes)
+                return -ENOMEM;
+
         *ret = m;
         m = NULL;
 
@@ -72,11 +78,16 @@ int nl_manager_new(NLManager **ret, sd_event *event) {
 }
 
 void nl_manager_free(NLManager *m) {
+        NLRoute *route;
         NLAddress *address;
         NLLink *link;
 
         if (!m)
                 return;
+
+        while ((route = set_steal_first(m->routes)))
+                nl_route_unref(route);
+        set_free(m->routes);
 
         while ((address = set_steal_first(m->addresses)))
                 nl_address_unref(address);
@@ -202,24 +213,54 @@ static int remove_address(sd_netlink *rtnl, sd_netlink_message *message, void *u
 
 static int add_route(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
         NLManager *m = userdata;
+        _cleanup_(nl_route_unrefp) NLRoute *new_route = NULL, *old_route = NULL;
+        int r;
 
         if (m->enumerating_routes)
                 return 0;
 
-        /* XXX: implement route tracking */
-        log_info("rtnl: got new route");
+        r = nl_route_new(&new_route, message);
+        if (r < 0)
+                return r;
+
+        old_route = set_remove(m->routes, new_route);
+        r = set_put(m->routes, new_route);
+        if (r < 0)
+                return r;
+        new_route = NULL;
+
+        if (old_route) {
+                log_info("rtnl: updated route");
+
+                /* XXX: implement subscriptions */
+        } else {
+                log_info("rtnl: added route");
+
+                /* XXX: implement subscriptions */
+        }
 
         return 1;
 }
 
 static int remove_route(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
         NLManager *m = userdata;
+        _cleanup_(nl_route_unrefp) NLRoute *new_route = NULL, *old_route = NULL;
+        int r;
 
         if (m->enumerating_routes)
                 return 0;
 
-        /* XXX: implement route tracking */
-        log_info("rtnl: lost route");
+        r = nl_route_new(&new_route, message);
+        if (r < 0)
+                return r;
+
+        old_route = set_remove(m->routes, new_route);
+        if (!old_route)
+                return -ENODEV;
+
+        log_info("rtnl: removed route");
+
+        /* XXX: implement subscriptions */
 
         return 1;
 }
