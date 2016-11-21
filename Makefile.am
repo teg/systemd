@@ -5706,7 +5706,9 @@ libnetworkd_netlink_la_SOURCES = \
 	src/network/netlink/manager.h \
 	src/network/netlink/manager.c \
 	src/network/netlink/route.h \
-	src/network/netlink/route.c
+	src/network/netlink/route.c \
+	src/network/netlink/slot.h \
+	src/network/netlink/slot.c
 
 libnetworkd_netlink_la_LIBADD = \
 	libsystemd-shared.la

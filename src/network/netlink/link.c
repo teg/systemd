@@ -26,6 +26,7 @@
 #include "hashmap.h"
 
 #include "netlink/link.h"
+#include "netlink/slot.h"
 
 int nl_link_new(NLLink **linkp, sd_netlink_message *message) {
         _cleanup_(nl_link_unrefp) NLLink *link = NULL;
@@ -115,4 +116,25 @@ NLLink *nl_link_ref(NLLink *link) {
                 link->n_ref ++;
 
         return link;
+}
+
+int nl_link_subscribe(NLLink *link, NLSlot **slotp, nl_link_handler_t callback, void *userdata) {
+        _cleanup_(nl_slot_freep) NLSlot *slot = NULL;
+
+        slot = new0(NLSlot, 1);
+        if (!slot)
+                return -ENOMEM;
+
+        slot->callback.link = callback;
+        slot->userdata = userdata;
+
+        slot->link = link;
+        LIST_APPEND(slots, link->subscriptions, slot);
+
+        if (slotp)
+                /* XXX: handle cleanup */
+                *slotp = slot;
+        slot = NULL;
+
+        return 0;
 }

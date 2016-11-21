@@ -26,6 +26,7 @@
 #include "alloc-util.h"
 #include "fd-util.h"
 #include "hashmap.h"
+#include "list.h"
 #include "netlink-util.h"
 #include "set.h"
 
@@ -33,22 +34,10 @@
 #include "netlink/link.h"
 #include "netlink/manager.h"
 #include "netlink/route.h"
+#include "netlink/slot.h"
 
 /* use 16 MB for receive socket kernel queue. */
 #define RCVBUF_SIZE    (16*1024*1024)
-
-struct NLManager{
-        sd_netlink *rtnl;
-        sd_event *event;
-
-        bool enumerating_links:1;
-        bool enumerating_addresses:1;
-        bool enumerating_routes:1;
-
-        Hashmap *links;
-        Set *addresses;
-        Set *routes;
-};
 
 int nl_manager_new(NLManager **ret, sd_event *event) {
         _cleanup_(nl_manager_freep) NLManager *m = NULL;
@@ -106,6 +95,7 @@ void nl_manager_free(NLManager *m) {
 static int add_link(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
         NLManager *m = userdata;
         _cleanup_(nl_link_unrefp) NLLink *new_link = NULL, *old_link = NULL;
+        NLSlot *slot;
         int r;
 
         if (m->enumerating_links)
@@ -119,24 +109,25 @@ static int add_link(sd_netlink *rtnl, sd_netlink_message *message, void *userdat
         r = hashmap_put(m->links, INT_TO_PTR(new_link->ifindex), new_link);
         if (r < 0)
                 return r;
-        new_link = NULL;
 
         if (old_link) {
-                log_info("rtnl: updated link");
+                new_link->subscriptions = old_link->subscriptions;
+                old_link->subscriptions = NULL;
 
-                /* XXX: implement subscriptions */
-        } else {
-                log_info("rtnl: added link");
+                LIST_FOREACH(slots, slot, new_link->subscriptions)
+                        slot->callback.link(new_link, slot->userdata);
+        } else
+                LIST_FOREACH(slots, slot, m->link_subscriptions)
+                        slot->callback.link(new_link, slot->userdata);
 
-                /* XXX: implement subscriptions */
-        }
-
+        new_link = NULL;
         return 1;
 }
 
 static int remove_link(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
         NLManager *m = userdata;
         _cleanup_(nl_link_unrefp) NLLink *new_link = NULL, *old_link = NULL;
+        NLSlot *slot, *next;
         int r;
 
         if (m->enumerating_links)
@@ -150,9 +141,10 @@ static int remove_link(sd_netlink *rtnl, sd_netlink_message *message, void *user
         if (!old_link)
                 return -ENODEV;
 
-        log_info("rtnl: removed link");
-
-        /* XXX: implement subscriptions */
+        LIST_FOREACH_SAFE(slots, slot, next, old_link->subscriptions) {
+                slot->callback.link(NULL, slot->userdata);
+                LIST_REMOVE(slots, slot, old_link->subscriptions);
+        }
 
         return 1;
 }
@@ -160,6 +152,7 @@ static int remove_link(sd_netlink *rtnl, sd_netlink_message *message, void *user
 static int add_address(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
         NLManager *m = userdata;
         _cleanup_(nl_address_unrefp) NLAddress *new_address = NULL, *old_address = NULL;
+        NLSlot *slot;
         int r;
 
         if (m->enumerating_addresses)
@@ -173,24 +166,25 @@ static int add_address(sd_netlink *rtnl, sd_netlink_message *message, void *user
         r = set_put(m->addresses, new_address);
         if (r < 0)
                 return r;
-        new_address = NULL;
 
         if (old_address) {
-                log_info("rtnl: updated address");
+                new_address->subscriptions = old_address->subscriptions;
+                old_address->subscriptions = NULL;
 
-                /* XXX: implement subscriptions */
-        } else {
-                log_info("rtnl: added address");
+                LIST_FOREACH(slots, slot, new_address->subscriptions)
+                        slot->callback.address(new_address, slot->userdata);
+        } else
+                LIST_FOREACH(slots, slot, m->address_subscriptions)
+                        slot->callback.address(new_address, slot->userdata);
 
-                /* XXX: implement subscriptions */
-        }
-
+        new_address = NULL;
         return 1;
 }
 
 static int remove_address(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
         NLManager *m = userdata;
         _cleanup_(nl_address_unrefp) NLAddress *new_address = NULL, *old_address = NULL;
+        NLSlot *slot, *next;
         int r;
 
         if (m->enumerating_addresses)
@@ -204,9 +198,10 @@ static int remove_address(sd_netlink *rtnl, sd_netlink_message *message, void *u
         if (!old_address)
                 return -ENODEV;
 
-        log_info("rtnl: removed address");
-
-        /* XXX: implement subscriptions */
+        LIST_FOREACH_SAFE(slots, slot, next, old_address->subscriptions) {
+                slot->callback.address(NULL, slot->userdata);
+                LIST_REMOVE(slots, slot, old_address->subscriptions);
+        }
 
         return 1;
 }
@@ -214,6 +209,7 @@ static int remove_address(sd_netlink *rtnl, sd_netlink_message *message, void *u
 static int add_route(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
         NLManager *m = userdata;
         _cleanup_(nl_route_unrefp) NLRoute *new_route = NULL, *old_route = NULL;
+        NLSlot *slot;
         int r;
 
         if (m->enumerating_routes)
@@ -227,24 +223,25 @@ static int add_route(sd_netlink *rtnl, sd_netlink_message *message, void *userda
         r = set_put(m->routes, new_route);
         if (r < 0)
                 return r;
-        new_route = NULL;
 
         if (old_route) {
-                log_info("rtnl: updated route");
+                new_route->subscriptions = old_route->subscriptions;
+                old_route->subscriptions = NULL;
 
-                /* XXX: implement subscriptions */
-        } else {
-                log_info("rtnl: added route");
+                LIST_FOREACH(slots, slot, new_route->subscriptions)
+                        slot->callback.route(new_route, slot->userdata);
+        } else
+                LIST_FOREACH(slots, slot, m->route_subscriptions)
+                        slot->callback.route(new_route, slot->userdata);
 
-                /* XXX: implement subscriptions */
-        }
-
+        new_route = NULL;
         return 1;
 }
 
 static int remove_route(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
         NLManager *m = userdata;
         _cleanup_(nl_route_unrefp) NLRoute *new_route = NULL, *old_route = NULL;
+        NLSlot *slot, *next;
         int r;
 
         if (m->enumerating_routes)
@@ -258,9 +255,10 @@ static int remove_route(sd_netlink *rtnl, sd_netlink_message *message, void *use
         if (!old_route)
                 return -ENODEV;
 
-        log_info("rtnl: removed route");
-
-        /* XXX: implement subscriptions */
+        LIST_FOREACH_SAFE(slots, slot, next, old_route->subscriptions) {
+                slot->callback.route(NULL, slot->userdata);
+                LIST_REMOVE(slots, slot, old_route->subscriptions);
+        }
 
         return 1;
 }
@@ -453,6 +451,71 @@ int nl_manager_start(NLManager *m) {
         r = enumerate_links(m);
         if (r < 0)
                 return r;
+
+        return 0;
+}
+
+/* XXX: handle subscribe being called after nl_manager_start() */
+
+int nl_manager_subscribe_links(NLManager *m, NLSlot **slotp, nl_link_handler_t callback, void *userdata) {
+        _cleanup_(nl_slot_freep) NLSlot *slot = NULL;
+
+        slot = new0(NLSlot, 1);
+        if (!slot)
+                return -ENOMEM;
+
+        slot->manager = m;
+        slot->callback.link = callback;
+        slot->userdata = userdata;
+
+        LIST_APPEND(slots, m->link_subscriptions, slot);
+
+        if (slotp)
+                /* XXX: handle cleanup */
+                *slotp = slot;
+        slot = NULL;
+
+        return 0;
+}
+
+int nl_manager_subscribe_addresses(NLManager *m, NLSlot **slotp, nl_address_handler_t callback, void *userdata) {
+        _cleanup_(nl_slot_freep) NLSlot *slot = NULL;
+
+        slot = new0(NLSlot, 1);
+        if (!slot)
+                return -ENOMEM;
+
+        slot->manager = m;
+        slot->callback.address = callback;
+        slot->userdata = userdata;
+
+        LIST_APPEND(slots, m->address_subscriptions, slot);
+
+        if (slotp)
+                /* XXX: handle cleanup */
+                *slotp = slot;
+        slot = NULL;
+
+        return 0;
+}
+
+int nl_manager_subscribe_routes(NLManager *m, NLSlot **slotp, nl_route_handler_t callback, void *userdata) {
+        _cleanup_(nl_slot_freep) NLSlot *slot = NULL;
+
+        slot = new0(NLSlot, 1);
+        if (!slot)
+                return -ENOMEM;
+
+        slot->callback.route = callback;
+        slot->userdata = userdata;
+
+        LIST_APPEND(slots, m->route_subscriptions, slot);
+        slot->manager = m;
+
+        if (slotp)
+                /* XXX: handle cleanup */
+                *slotp = slot;
+        slot = NULL;
 
         return 0;
 }

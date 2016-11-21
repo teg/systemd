@@ -19,7 +19,12 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <net/ethernet.h>
+
+#include "list.h"
+
 typedef struct sd_netlink_message sd_netlink_message;
+typedef struct NLSlot NLSlot;
 
 typedef struct NLLink {
         int n_ref;
@@ -33,10 +38,16 @@ typedef struct NLLink {
 
         unsigned flags;
         uint8_t operstate;
+
+        LIST_HEAD(NLSlot, subscriptions);
 } NLLink;
+
+typedef void (*nl_link_handler_t)(NLLink *link, void *userdata);
 
 int nl_link_new(NLLink **linkp, sd_netlink_message *message);
 NLLink *nl_link_unref(NLLink *link);
 NLLink *nl_link_ref(NLLink *link);
+
+int nl_link_subscribe(NLLink *link, NLSlot **slotp, nl_link_handler_t callback, void *userdata);
 
 DEFINE_TRIVIAL_CLEANUP_FUNC(NLLink*, nl_link_unref);

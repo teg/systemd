@@ -20,8 +20,10 @@
 ***/
 
 #include "in-addr-util.h"
+#include "list.h"
 
 typedef struct sd_netlink_message sd_netlink_message;
+typedef struct NLSlot NLSlot;
 
 typedef struct NLAddress {
         int n_ref;
@@ -38,13 +40,19 @@ typedef struct NLAddress {
         char *label;
 
         struct ifa_cacheinfo cinfo;
+
+        LIST_HEAD(NLSlot, subscriptions);
 } NLAddress;
+
+typedef void (*nl_address_handler_t)(NLAddress *address, void *userdata);
 
 int nl_address_new(NLAddress **addressp, sd_netlink_message *message);
 NLAddress *nl_address_unref(NLAddress *address);
 NLAddress *nl_address_ref(NLAddress *address);
 
 void nl_address_init(NLAddress *address);
+
+int nl_address_subscribe(NLAddress *address, NLSlot **slotp, nl_address_handler_t callback, void *userdata);
 
 extern const struct hash_ops nl_address_hash_ops;
 

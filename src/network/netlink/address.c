@@ -26,6 +26,7 @@
 #include "hashmap.h"
 
 #include "netlink/address.h"
+#include "netlink/slot.h"
 
 #define CACHE_INFO_INFINITY_LIFE_TIME 0xFFFFFFFFU
 
@@ -207,3 +208,24 @@ const struct hash_ops nl_address_hash_ops = {
         .hash = address_hash_func,
         .compare = address_compare_func,
 };
+
+int nl_address_subscribe(NLAddress *address, NLSlot **slotp, nl_address_handler_t callback, void *userdata) {
+        _cleanup_(nl_slot_freep) NLSlot *slot = NULL;
+
+        slot = new0(NLSlot, 1);
+        if (!slot)
+                return -ENOMEM;
+
+        slot->callback.address = callback;
+        slot->userdata = userdata;
+
+        slot->address = address;
+        LIST_APPEND(slots, address->subscriptions, slot);
+
+        if (slotp)
+                /* XXX: handle cleanup */
+                *slotp = slot;
+        slot = NULL;
+
+        return 0;
+}

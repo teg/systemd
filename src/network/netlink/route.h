@@ -19,9 +19,11 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include "list.h"
 #include "in-addr-util.h"
 
 typedef struct sd_netlink_message sd_netlink_message;
+typedef struct NLSlot NLSlot;
 
 typedef struct NLRoute {
         int n_ref;
@@ -41,11 +43,17 @@ typedef struct NLRoute {
         uint32_t priority;
         uint32_t table;
         uint32_t oif;
+
+        LIST_HEAD(NLSlot, subscriptions);
 } NLRoute;
+
+typedef void (*nl_route_handler_t)(NLRoute *route, void *userdata);
 
 int nl_route_new(NLRoute **routep, sd_netlink_message *message);
 NLRoute *nl_route_unref(NLRoute *route);
 NLRoute *nl_route_ref(NLRoute *route);
+
+int nl_route_subscribe(NLRoute *route, NLSlot **slotp, nl_route_handler_t callback, void *userdata);
 
 extern const struct hash_ops nl_route_hash_ops;
 

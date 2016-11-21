@@ -19,12 +19,40 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-typedef struct NLManager NLManager;
+#include "netlink/address.h"
+#include "netlink/link.h"
+#include "netlink/route.h"
+
+typedef struct NLSlot NLSlot;
 typedef struct sd_event sd_event;
+typedef struct sd_netlink sd_netlink;
+typedef struct Hashmap Hashmap;
+typedef struct Set Set;
+
+/* XXX: move to manager.c when slot.c no longer needs it */
+typedef struct NLManager{
+        sd_netlink *rtnl;
+        sd_event *event;
+
+        bool enumerating_links:1;
+        bool enumerating_addresses:1;
+        bool enumerating_routes:1;
+
+        LIST_HEAD(NLSlot, link_subscriptions);
+        LIST_HEAD(NLSlot, address_subscriptions);
+        LIST_HEAD(NLSlot, route_subscriptions);
+        Hashmap *links;
+        Set *addresses;
+        Set *routes;
+} NLManager;
 
 int nl_manager_new(NLManager **ret, sd_event *event);
 void nl_manager_free(NLManager *m);
 
 int nl_manager_start(NLManager *m);
+
+int nl_manager_subscribe_links(NLManager *m, NLSlot **slot, nl_link_handler_t callback, void *userdata);
+int nl_manager_subscribe_addresses(NLManager *m, NLSlot **slot, nl_address_handler_t callback, void *userdata);
+int nl_manager_subscribe_routes(NLManager *m, NLSlot **slot, nl_route_handler_t callback, void *userdata);
 
 DEFINE_TRIVIAL_CLEANUP_FUNC(NLManager*, nl_manager_free);

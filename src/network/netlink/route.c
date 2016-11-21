@@ -26,6 +26,7 @@
 #include "hashmap.h"
 
 #include "netlink/route.h"
+#include "netlink/slot.h"
 
 int nl_route_new(NLRoute **routep, sd_netlink_message *message) {
         _cleanup_(nl_route_unrefp) NLRoute *route = NULL;
@@ -107,6 +108,8 @@ static void route_hash_func(const void *b, struct siphash *state) {
         const NLRoute *route = b;
         union in_addr_union prefix;
 
+        /* XXX: make sure this implements the same semantics as the kernel */
+
         siphash24_compress(&route->family, sizeof(route->family), state);
         siphash24_compress(&route->table, sizeof(route->table), state);
         siphash24_compress(&route->priority, sizeof(route->priority), state);
@@ -134,6 +137,8 @@ static void route_hash_func(const void *b, struct siphash *state) {
 static int route_compare_func(const void *a, const void *b) {
         const NLRoute *x = a, *y = b;
         union in_addr_union prefix1, prefix2;
+
+        /* XXX: make sure this implements the same semantics as the kernel */
 
         if (x->family < y->family)
                 return -1;
@@ -186,3 +191,24 @@ const struct hash_ops nl_route_hash_ops = {
         .hash = route_hash_func,
         .compare = route_compare_func,
 };
+
+int nl_route_subscribe(NLRoute *route, NLSlot **slotp, nl_route_handler_t callback, void *userdata) {
+        _cleanup_(nl_slot_freep) NLSlot *slot = NULL;
+
+        slot = new0(NLSlot, 1);
+        if (!slot)
+                return -ENOMEM;
+
+        slot->callback.route = callback;
+        slot->userdata = userdata;
+
+        slot->route = route;
+        LIST_APPEND(slots, route->subscriptions, slot);
+
+        if (slotp)
+                /* XXX: handle cleanup */
+                *slotp = slot;
+        slot = NULL;
+
+        return 0;
+}
