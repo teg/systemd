@@ -24,14 +24,20 @@
 #include "netlink/manager.h"
 #include "netlink/route.h"
 
+typedef struct sd_netlink sd_netlink;
+
 struct NLSlot {
         LIST_FIELDS(NLSlot, slots);
         union {
                 nl_link_handler_t link;
                 nl_address_handler_t address;
                 nl_route_handler_t route;
+                nl_reply_handler_t reply;
         } callback;
         void *userdata;
+
+        sd_netlink *rtnl;
+        uint32_t serial;
 
         /* XXX: drop these and use a better linked list */
         NLManager *manager;

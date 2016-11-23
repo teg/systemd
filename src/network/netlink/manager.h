@@ -46,6 +46,8 @@ typedef struct NLManager{
         Set *routes;
 } NLManager;
 
+typedef void (*nl_reply_handler_t)(int error, void *userdata);
+
 int nl_manager_new(NLManager **ret, sd_event *event);
 void nl_manager_free(NLManager *m);
 
@@ -54,5 +56,11 @@ int nl_manager_start(NLManager *m);
 int nl_manager_subscribe_links(NLManager *m, NLSlot **slot, nl_link_handler_t callback, void *userdata);
 int nl_manager_subscribe_addresses(NLManager *m, NLSlot **slot, nl_address_handler_t callback, void *userdata);
 int nl_manager_subscribe_routes(NLManager *m, NLSlot **slot, nl_route_handler_t callback, void *userdata);
+
+int nl_manager_create_address(NLManager *m, NLAddress *address, NLSlot **slotp, nl_reply_handler_t callback, void *userdata);
+int nl_manager_create_route(NLManager *m, NLRoute *route, NLSlot **slotp, nl_reply_handler_t callback, void *userdata);
+
+int nl_manager_destroy_address(NLManager *m, NLAddress *address);
+int nl_manager_destroy_route(NLManager *m, NLRoute *route);
 
 DEFINE_TRIVIAL_CLEANUP_FUNC(NLManager*, nl_manager_free);

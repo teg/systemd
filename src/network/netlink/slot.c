@@ -17,6 +17,8 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
  ***/
 
+#include "sd-netlink.h"
+
 #include "netlink/slot.h"
 
 void nl_slot_free(NLSlot *slot) {
@@ -31,8 +33,12 @@ void nl_slot_free(NLSlot *slot) {
                         LIST_REMOVE(slots, slot->link->subscriptions, slot);
         else if (slot->address)
                         LIST_REMOVE(slots, slot->address->subscriptions, slot);
-        else
+        else if (slot->route)
                         LIST_REMOVE(slots, slot->route->subscriptions, slot);
 
+        if (slot->rtnl)
+                sd_netlink_call_async_cancel(slot->rtnl, slot->serial);
+
+        sd_netlink_unref(slot->rtnl);
         free(slot);
 }

@@ -519,3 +519,355 @@ int nl_manager_subscribe_routes(NLManager *m, NLSlot **slotp, nl_route_handler_t
 
         return 0;
 }
+
+static int reply_handler(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
+        NLSlot *slot = userdata;
+
+        if (!sd_netlink_message_is_error(message))
+                return -EIO;
+
+        if (slot->callback.reply) {
+                slot->callback.reply(sd_netlink_message_get_errno(message), slot->userdata);
+                slot->rtnl = sd_netlink_unref(slot->rtnl);
+                slot->serial = 0;
+        } else
+                nl_slot_free(slot);
+
+        return 1;
+}
+
+int nl_manager_create_address(NLManager *m, NLAddress *address, NLSlot **slotp, nl_reply_handler_t callback, void *userdata) {
+        _cleanup_(nl_slot_freep) NLSlot *slot = NULL;
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *message = NULL;
+        int r;
+
+        slot = new0(NLSlot, 1);
+        if (!slot)
+                return -ENOMEM;
+
+        slot->callback.reply = callback;
+        slot->userdata = userdata;
+
+        r = sd_rtnl_message_new_addr(m->rtnl, &message, RTM_NEWADDR, address->ifindex, address->family);
+        if (r < 0)
+                return r;
+
+        r = sd_rtnl_message_addr_set_prefixlen(message, address->prefixlen);
+        if (r < 0)
+                return r;
+
+        r = sd_rtnl_message_addr_set_scope(message, address->scope);
+        if (r < 0)
+                return r;
+
+        r = sd_rtnl_message_addr_set_flags(message, address->flags & 0xff);
+        if (r < 0)
+                return r;
+
+        if (address->flags & ~0xff) {
+                r = sd_netlink_message_append_u32(message, IFA_FLAGS, address->flags);
+                if (r < 0)
+                        return r;
+        }
+
+        if (address->label) {
+                r = sd_netlink_message_append_string(message, IFA_LABEL, address->label);
+                if (r < 0)
+                        return r;
+        }
+
+        r = sd_netlink_message_append_cache_info(message, IFA_CACHEINFO, &address->cinfo);
+        if (r < 0)
+                return r;
+
+        switch (address->family) {
+        case AF_INET:
+                r = sd_netlink_message_append_in_addr(message, IFA_LOCAL, &address->in_addr.in);
+                if (r < 0)
+                        return r;
+
+                if (!in_addr_is_null(AF_INET, &address->in_addr_peer)) {
+                        r = sd_netlink_message_append_in_addr(message, IFA_ADDRESS, &address->in_addr_peer.in);
+                        if (r < 0)
+                                return r;
+                } else if (!in_addr_is_null(AF_INET, (union in_addr_union*)&address->broadcast)) {
+                        r = sd_netlink_message_append_in_addr(message, IFA_BROADCAST, &address->broadcast);
+                        if (r < 0)
+                                return r;
+
+                }
+
+                break;
+        case AF_INET6:
+                r = sd_netlink_message_append_in6_addr(message, IFA_LOCAL, &address->in_addr.in6);
+                if (r < 0)
+                        return r;
+
+                if (!in_addr_is_null(AF_INET6, &address->in_addr_peer)) {
+                        r = sd_netlink_message_append_in6_addr(message, IFA_ADDRESS, &address->in_addr_peer.in6);
+                        if (r < 0)
+                                return r;
+                }
+
+                break;
+        default:
+                break;
+        }
+
+        r = sd_netlink_call_async(m->rtnl, message, reply_handler, slot, 0, &slot->serial);
+        if (r < 0)
+                return r;
+
+        slot->rtnl = sd_netlink_ref(m->rtnl);
+
+        if (slotp)
+                /* XXX: handle cleanup */
+                *slotp = slot;
+        slot = NULL;
+        return 0;
+}
+
+int nl_manager_create_route(NLManager *m, NLRoute *route, NLSlot **slotp, nl_reply_handler_t callback, void *userdata) {
+        _cleanup_(nl_slot_freep) NLSlot *slot = NULL;
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *message = NULL;
+        int r;
+
+        slot = new0(NLSlot, 1);
+        if (!slot)
+                return -ENOMEM;
+
+        slot->callback.reply = callback;
+        slot->userdata = userdata;
+
+        r = sd_rtnl_message_new_route(m->rtnl, &message, RTM_NEWROUTE, route->family, route->protocol);
+        if (r < 0)
+                return r;
+
+        r = sd_rtnl_message_route_set_dst_prefixlen(message, route->dst_prefixlen);
+        if (r < 0)
+                return 0;
+
+        r = sd_rtnl_message_route_set_src_prefixlen(message, route->src_prefixlen);
+        if (r < 0)
+                return 0;
+
+        r = sd_rtnl_message_route_set_scope(message, route->scope);
+        if (r < 0)
+                return 0;
+
+        r = sd_rtnl_message_route_set_flags(message, route->flags);
+        if (r < 0)
+                return 0;
+
+        switch (route->family) {
+        case AF_INET:
+                if (!in_addr_is_null(route->family, &route->gw)) {
+                        r = sd_netlink_message_append_in_addr(message, RTA_GATEWAY, &route->gw.in);
+                        if (r < 0)
+                                return r;
+                }
+
+                if (!in_addr_is_null(route->family, &route->prefsrc)) {
+                        r = sd_netlink_message_append_in_addr(message, RTA_PREFSRC, &route->prefsrc.in);
+                        if (r < 0)
+                                return r;
+                }
+
+                if (route->dst_prefixlen) {
+                        r = sd_netlink_message_append_in_addr(message, RTA_DST, &route->dst.in);
+                        if (r < 0)
+                                return r;
+                }
+
+                if (route->src_prefixlen) {
+                        r = sd_netlink_message_append_in_addr(message, RTA_SRC, &route->src.in);
+                        if (r < 0)
+                                return r;
+                }
+
+                break;
+        case AF_INET6:
+                if (!in_addr_is_null(route->family, &route->gw)) {
+                        r = sd_netlink_message_append_in_addr(message, RTA_GATEWAY, &route->gw.in);
+                        if (r < 0)
+                                return r;
+                }
+
+                if (!in_addr_is_null(route->family, &route->prefsrc)) {
+                        r = sd_netlink_message_append_in6_addr(message, RTA_PREFSRC, &route->prefsrc.in6);
+                        if (r < 0)
+                                return r;
+                }
+
+                if (route->dst_prefixlen) {
+                        r = sd_netlink_message_append_in6_addr(message, RTA_DST, &route->dst.in6);
+                        if (r < 0)
+                                return r;
+                }
+
+                if (route->src_prefixlen) {
+                        r = sd_netlink_message_append_in6_addr(message, RTA_SRC, &route->src.in6);
+                        if (r < 0)
+                                return r;
+                }
+                break;
+        default:
+                break;
+        }
+
+        if (route->table <= 0xff) {
+                r = sd_rtnl_message_route_set_table(message, route->table);
+                if (r < 0)
+                        return r;
+        } else {
+                r = sd_rtnl_message_route_set_table(message, RT_TABLE_UNSPEC);
+                if (r < 0)
+                        return r;
+
+                r = sd_netlink_message_append_data(message, RTA_TABLE, &route->table, sizeof(route->table));
+                if (r < 0)
+                        return r;
+        }
+
+        r = sd_netlink_message_append_u32(message, RTA_PRIORITY, route->priority);
+        if (r < 0)
+                return r;
+
+        r = sd_netlink_message_append_u8(message, RTA_PREF, route->pref);
+        if (r < 0)
+                return r;
+
+        r = sd_netlink_message_append_u32(message, RTA_OIF, route->oif);
+        if (r < 0)
+                return r;
+
+        r = sd_netlink_call_async(m->rtnl, message, reply_handler, slot, 0, &slot->serial);
+        if (r < 0)
+                return r;
+
+        slot->rtnl = sd_netlink_ref(m->rtnl);
+
+        if (slotp)
+                /* XXX: handle cleanup */
+                *slotp = slot;
+        slot = NULL;
+        return 0;
+}
+
+int nl_manager_destroy_address(NLManager *m, NLAddress *address) {
+        _cleanup_(nl_slot_freep) NLSlot *slot = NULL;
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *message = NULL;
+        int r;
+
+        slot = new0(NLSlot, 1);
+        if (!slot)
+                return -ENOMEM;
+
+        r = sd_rtnl_message_new_addr(m->rtnl, &message, RTM_DELADDR, address->ifindex, address->family);
+        if (r < 0)
+                return r;
+
+        switch (address->family) {
+        case AF_INET:
+                r = sd_rtnl_message_addr_set_prefixlen(message, address->prefixlen);
+                if (r < 0)
+                        return r;
+
+                if (!in_addr_is_null(AF_INET, &address->in_addr_peer)) {
+                        r = sd_netlink_message_append_in_addr(message, IFA_ADDRESS, &address->in_addr_peer.in);
+                        if (r < 0)
+                                return r;
+                }
+
+                r = sd_netlink_message_append_in_addr(message, IFA_LOCAL, &address->in_addr.in);
+                if (r < 0)
+                        return r;
+                break;
+
+        case AF_INET6:
+                r = sd_netlink_message_append_in6_addr(message, IFA_LOCAL, &address->in_addr.in6);
+                if (r < 0)
+                        return r;
+                break;
+
+        default:
+                break;
+        }
+
+        r = sd_netlink_call_async(m->rtnl, message, reply_handler, slot, 0, &slot->serial);
+        if (r < 0)
+                return r;
+
+        slot = NULL;
+
+        return 0;
+}
+
+int nl_manager_destroy_route(NLManager *m, NLRoute *route) {
+        _cleanup_(nl_slot_freep) NLSlot *slot = NULL;
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *message = NULL;
+        int r;
+
+        slot = new0(NLSlot, 1);
+        if (!slot)
+                return -ENOMEM;
+
+        r = sd_rtnl_message_new_route(m->rtnl, &message, RTM_NEWROUTE, route->family, route->protocol);
+        if (r < 0)
+                return r;
+
+        if (route->table <= 0xff) {
+                r = sd_rtnl_message_route_set_table(message, route->table);
+                if (r < 0)
+                        return r;
+        } else {
+                r = sd_rtnl_message_route_set_table(message, RT_TABLE_UNSPEC);
+                if (r < 0)
+                        return r;
+
+                r = sd_netlink_message_append_data(message, RTA_TABLE, &route->table, sizeof(route->table));
+                if (r < 0)
+                        return r;
+        }
+
+        r = sd_netlink_message_append_u32(message, RTA_PRIORITY, route->priority);
+        if (r < 0)
+                return r;
+
+        r = sd_rtnl_message_route_set_dst_prefixlen(message, route->dst_prefixlen);
+        if (r < 0)
+                return r;
+
+        switch (route->family) {
+        case AF_INET:
+                r = sd_netlink_message_append_in_addr(message, RTA_DST, &route->dst.in);
+                if (r < 0)
+                        return r;
+
+                r = sd_rtnl_message_route_set_tos(message, route->tos);
+                if (r < 0)
+                        return r;
+
+                break;
+        case AF_INET6:
+                r = sd_netlink_message_append_in6_addr(message, RTA_DST, &route->dst.in6);
+                if (r < 0)
+                        return r;
+
+                r = sd_netlink_message_append_u32(message, RTA_OIF, route->oif);
+                if (r < 0)
+                        return r;
+
+                break;
+        default:
+                break;
+        }
+
+        r = sd_netlink_call_async(m->rtnl, message, reply_handler, slot, 0, &slot->serial);
+        if (r < 0)
+                return r;
+
+        slot = NULL;
+
+        return 0;
+}
