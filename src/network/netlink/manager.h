@@ -57,6 +57,8 @@ int nl_manager_subscribe_links(NLManager *m, NLSlot **slot, nl_link_handler_t ca
 int nl_manager_subscribe_addresses(NLManager *m, NLSlot **slot, nl_address_handler_t callback, void *userdata);
 int nl_manager_subscribe_routes(NLManager *m, NLSlot **slot, nl_route_handler_t callback, void *userdata);
 
+int nl_manager_get_link(NLManager *m, NLLink *link, NLSlot **slot, nl_link_handler_t callback, void *userdata);
+
 int nl_manager_create_address(NLManager *m, NLAddress *address, NLSlot **slotp, nl_reply_handler_t callback, void *userdata);
 int nl_manager_create_route(NLManager *m, NLRoute *route, NLSlot **slotp, nl_reply_handler_t callback, void *userdata);
 

@@ -520,6 +520,51 @@ int nl_manager_subscribe_routes(NLManager *m, NLSlot **slotp, nl_route_handler_t
         return 0;
 }
 
+static int get_link_handler(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
+        NLSlot *slot = userdata;
+        NLLink *link;
+        int r;
+
+        r = nl_link_new(&link, message);
+        if (r < 0)
+                return r;
+
+        slot->callback.link(link, slot->userdata);
+
+        sd_netlink_unref(slot->rtnl);
+        nl_link_unref(link);
+
+        return 1;
+}
+
+int nl_manager_get_link(NLManager *m, NLLink *link, NLSlot **slotp, nl_link_handler_t callback, void *userdata) {
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *message = NULL;
+        _cleanup_(nl_slot_freep) NLSlot *slot = NULL;
+        int r;
+
+        slot = new0(NLSlot, 1);
+        if (!slot)
+                return -ENOMEM;
+
+        slot->callback.link = callback;
+        slot->userdata = userdata;
+
+        r = sd_rtnl_message_new_link(m->rtnl, &message, RTM_GETLINK, link->ifindex);
+        if (r < 0)
+                return r;
+
+        r = sd_netlink_call_async(m->rtnl, message, get_link_handler, slot, 0, &slot->serial);
+        if (r < 0)
+                return r;
+
+        slot->rtnl = sd_netlink_ref(m->rtnl);
+
+        if (slotp)
+                *slotp = slot;
+        slot = NULL;
+        return 0;
+}
+
 static int reply_handler(sd_netlink *rtnl, sd_netlink_message *message, void *userdata) {
         NLSlot *slot = userdata;
 
