@@ -274,7 +274,9 @@ int sd_rtnl_message_new_route(sd_netlink *rtnl, sd_netlink_message **ret,
                 return r;
 
         if (nlmsg_type == RTM_NEWROUTE)
-                (*ret)->hdr->nlmsg_flags |= NLM_F_CREATE | NLM_F_APPEND;
+                (*ret)->hdr->nlmsg_flags |= NLM_F_CREATE | NLM_F_APPEND | NLM_F_ACK;
+        else if (nlmsg_type == RTM_DELROUTE)
+                (*ret)->hdr->nlmsg_flags |= NLM_F_ACK;
 
         rtm = NLMSG_DATA((*ret)->hdr);
 
@@ -384,7 +386,9 @@ int sd_rtnl_message_new_neigh(sd_netlink *rtnl, sd_netlink_message **ret, uint16
                 return r;
 
         if (nlmsg_type == RTM_NEWNEIGH)
-                (*ret)->hdr->nlmsg_flags |= NLM_F_CREATE | NLM_F_APPEND;
+                (*ret)->hdr->nlmsg_flags |= NLM_F_CREATE | NLM_F_APPEND | NLM_F_ACK;
+        else if (nlmsg_type == RTM_DELNEIGH)
+                (*ret)->hdr->nlmsg_flags |= NLM_F_ACK;
 
         ndm = NLMSG_DATA((*ret)->hdr);
 
@@ -451,7 +455,9 @@ int sd_rtnl_message_new_link(sd_netlink *rtnl, sd_netlink_message **ret,
                 return r;
 
         if (nlmsg_type == RTM_NEWLINK)
-                (*ret)->hdr->nlmsg_flags |= NLM_F_CREATE | NLM_F_EXCL;
+                (*ret)->hdr->nlmsg_flags |= NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK;
+        else if (nlmsg_type == RTM_SETLINK || nlmsg_type == RTM_DELLINK)
+                (*ret)->hdr->nlmsg_flags |= NLM_F_ACK;
 
         ifi = NLMSG_DATA((*ret)->hdr);
 
@@ -601,6 +607,8 @@ int sd_rtnl_message_new_addr(sd_netlink *rtnl, sd_netlink_message **ret,
 
         if (nlmsg_type == RTM_GETADDR)
                 (*ret)->hdr->nlmsg_flags |= NLM_F_DUMP;
+        else if (nlmsg_type == RTM_NEWADDR)
+                (*ret)->hdr->nlmsg_flags |= NLM_F_ACK;
 
         ifa = NLMSG_DATA((*ret)->hdr);
 

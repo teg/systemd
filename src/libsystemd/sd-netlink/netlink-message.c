@@ -86,7 +86,7 @@ int message_new(sd_netlink *rtnl, sd_netlink_message **ret, uint16_t type) {
         if (!m->hdr)
                 return -ENOMEM;
 
-        m->hdr->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+        m->hdr->nlmsg_flags = NLM_F_REQUEST;
 
         type_get_type_system(nl_type, &m->containers[0].type_system);
         m->hdr->nlmsg_len = size;
