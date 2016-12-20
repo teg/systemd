@@ -529,7 +529,6 @@ int sd_netlink_call_async(sd_netlink *nl,
 
         assert_return(nl, -EINVAL);
         assert_return(m, -EINVAL);
-        assert_return(callback, -EINVAL);
         assert_return(!rtnl_pid_changed(nl), -ECHILD);
 
         r = hashmap_ensure_allocated(&nl->reply_callbacks, &uint64_hash_ops);
@@ -542,13 +541,15 @@ int sd_netlink_call_async(sd_netlink *nl,
                         return r;
         }
 
-        c = new0(struct reply_callback, 1);
-        if (!c)
-                return -ENOMEM;
+        if (callback) {
+                c = new0(struct reply_callback, 1);
+                if (!c)
+                        return -ENOMEM;
 
-        c->callback = callback;
-        c->userdata = userdata;
-        c->timeout = calc_elapse(usec);
+                c->callback = callback;
+                c->userdata = userdata;
+                c->timeout = calc_elapse(usec);
+        }
 
         k = sd_netlink_send(nl, m, &s);
         if (k < 0) {
@@ -556,20 +557,22 @@ int sd_netlink_call_async(sd_netlink *nl,
                 return k;
         }
 
-        c->serial = s;
+        if (callback) {
+                c->serial = s;
 
-        r = hashmap_put(nl->reply_callbacks, &c->serial, c);
-        if (r < 0) {
-                free(c);
-                return r;
-        }
-
-        if (c->timeout != 0) {
-                r = prioq_put(nl->reply_callbacks_prioq, c, &c->prioq_idx);
-                if (r > 0) {
-                        c->timeout = 0;
-                        sd_netlink_call_async_cancel(nl, c->serial);
+                r = hashmap_put(nl->reply_callbacks, &c->serial, c);
+                if (r < 0) {
+                        free(c);
                         return r;
+                }
+
+                if (c->timeout != 0) {
+                        r = prioq_put(nl->reply_callbacks_prioq, c, &c->prioq_idx);
+                        if (r > 0) {
+                                c->timeout = 0;
+                                sd_netlink_call_async_cancel(nl, c->serial);
+                                return r;
+                        }
                 }
         }
 
