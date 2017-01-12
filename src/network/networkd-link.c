@@ -1239,47 +1239,6 @@ static int set_flags_handler(sd_netlink *rtnl, sd_netlink_message *m, void *user
         return 1;
 }
 
-static int link_set_flags(Link *link) {
-        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL;
-        unsigned ifi_change = 0;
-        unsigned ifi_flags = 0;
-        int r;
-
-        assert(link);
-        assert(link->manager);
-        assert(link->manager->rtnl);
-
-        if (link->flags & IFF_LOOPBACK)
-                return 0;
-
-        if (!link->network)
-                return 0;
-
-        if (link->network->arp < 0)
-                return 0;
-
-        r = sd_rtnl_message_new_link(link->manager->rtnl, &req, RTM_SETLINK, link->ifindex);
-        if (r < 0)
-                return log_link_error_errno(link, r, "Could not allocate RTM_SETLINK message: %m");
-
-        if (link->network->arp >= 0) {
-                ifi_change |= IFF_NOARP;
-                ifi_flags |= link->network->arp ? 0 : IFF_NOARP;
-        }
-
-        r = sd_rtnl_message_link_set_flags(req, ifi_flags, ifi_change);
-        if (r < 0)
-                return log_link_error_errno(link, r, "Could not set link flags: %m");
-
-        r = sd_netlink_call_async(link->manager->rtnl, req, set_flags_handler, link, 0, NULL);
-        if (r < 0)
-                return log_link_error_errno(link, r, "Could not send rtnetlink message: %m");
-
-        link_ref(link);
-
-        return 0;
-}
-
 static int link_set_bridge(Link *link) {
         _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL;
         int r;
@@ -1600,6 +1559,8 @@ static int link_up_handler(sd_netlink *rtnl, sd_netlink_message *m, void *userda
 static int link_up(Link *link) {
         _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL;
         uint8_t ipv6ll_mode;
+        unsigned change = IFF_UP;
+        unsigned flags = IFF_UP;
         int r;
 
         assert(link);
@@ -1620,7 +1581,12 @@ static int link_up(Link *link) {
                         return log_link_error_errno(link, r, "Could not append IFLA_MASTER attribute: %m");
         }
 
-        r = sd_rtnl_message_link_set_flags(req, IFF_UP, IFF_UP);
+        if (link->network->arp >= 0) {
+                change |= IFF_NOARP;
+                flags |= link->network->arp ? 0 : IFF_NOARP;
+        }
+
+        r = sd_rtnl_message_link_set_flags(req, flags, change);
         if (r < 0)
                 return log_link_error_errno(link, r, "Could not set link flags: %m");
 
@@ -1748,6 +1714,8 @@ static int link_down(Link *link) {
 
 static int link_up_can(Link *link) {
         _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL;
+        unsigned change = IFF_UP;
+        unsigned flags = IFF_UP;
         int r;
 
         assert(link);
@@ -1758,7 +1726,12 @@ static int link_up_can(Link *link) {
         if (r < 0)
                 return log_link_error_errno(link, r, "Could not allocate RTM_SETLINK message: %m");
 
-        r = sd_rtnl_message_link_set_flags(req, IFF_UP, IFF_UP);
+        if (link->network->arp >= 0) {
+                change |= IFF_NOARP;
+                flags |= link->network->arp ? 0 : IFF_NOARP;
+        }
+
+        r = sd_rtnl_message_link_set_flags(req, flags, change);
         if (r < 0)
                 return log_link_error_errno(link, r, "Could not set link flags: %m");
 
@@ -2469,10 +2442,6 @@ static int link_configure(Link *link) {
                 return r;
 
         r = link_set_ipv6_hop_limit(link);
-        if (r < 0)
-                return r;
-
-        r = link_set_flags(link);
         if (r < 0)
                 return r;
 
