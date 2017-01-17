@@ -5748,6 +5748,21 @@ libnetworkd_core_la_LIBADD = \
 	libsystemd-shared.la
 
 noinst_LTLIBRARIES += \
+	libnetworkd-rtnl.la \
+	libnetworkd-ip.la
+
+libnetworkd_ip_la_CFLAGS = \
+	$(AM_CFLAGS)
+
+libnetworkd_ip_la_SOURCES = \
+	src/network/ip/ip.h \
+	src/network/ip/manager.h \
+	src/network/ip/manager.c \
+	src/network/ip/ipv4ll.c
+
+libnetworkd_ip_la_LIBADD = \
+	libsystemd-network.la \
+	libsystemd-shared.la \
 	libnetworkd-rtnl.la
 
 libnetworkd_rtnl_la_CFLAGS = \
@@ -5815,6 +5830,14 @@ test_network_SOURCES = \
 test_network_LDADD = \
 	libnetworkd-core.la
 
+test_network_ip_SOURCES = \
+	src/network/ip/test.c
+
+test_network_ip_LDADD = \
+	libnetworkd-ip.la \
+	libnetworkd-rtnl.la \
+	libsystemd-network.la
+
 test_network_rtnl_SOURCES = \
 	src/network/rtnl/test.c
 
@@ -5845,7 +5868,8 @@ tests += \
 	test-network-tables
 
 manual_tests += \
-	test-network-rtnl
+	test-network-rtnl \
+	test-network-ip
 
 dist_systemunit_DATA += \
 	units/systemd-networkd.socket
